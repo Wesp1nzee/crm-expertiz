@@ -1,0 +1,33 @@
+[project]
+name = "crm-expertiz"
+version = "0.1.0"
+description = "CRM система с использованием FastAPI и строгой типизации"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "pydantic[email]>=2.9.0",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.15.0",
+    "ruff>=0.9.0",
+]
+
+[tool.uv]
+managed = true
+package = false # Это уберет предупреждение про "not packaged"
+
+[tool.ruff]
+line-length = 88
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "ANN", "UP", "N"]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+plugins = ["pydantic.mypy"]
