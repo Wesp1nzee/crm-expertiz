@@ -2,7 +2,7 @@
 
 # Запуск линтера
 lint:
-	uv run ruff check .
+	uv run ruff check . --fix
 
 # Форматирование кода
 format:
@@ -17,7 +17,7 @@ all: format lint typecheck
 
 # Запуск FastAPI в режиме разработки
 run:
-	uv run uvicorn main:app --reload
+	uv run uvicorn src.main:app --reload
 
 # Синхронизация зависимостей
 sync:
