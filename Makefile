@@ -19,6 +19,10 @@ all: format lint typecheck
 run:
 	uv run uvicorn src.main:app --reload
 
+# Запуск тестов
+test:
+	uv run pytest tests/ -v
+
 # Синхронизация зависимостей
 sync:
 	uv sync
