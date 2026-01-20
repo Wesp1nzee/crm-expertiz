@@ -5,15 +5,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.database import get_db
-
-from .schemas import (
+from src.app.services.client.schemas import (
     ClientCreate,
     ClientFilters,
     ClientFullResponse,
     ClientListResponse,
     ClientUpdate,
 )
-from .service import ClientService
+from src.app.services.client.service import ClientService
 
 router = APIRouter(prefix="/api/clients", tags=["Clients"])
 

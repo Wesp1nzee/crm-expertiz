@@ -5,8 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ...core.database import get_db
-from .schemas import (
+from src.app.core.database import get_db
+from src.app.services.case.schemas import (
     CaseCreateRequest,
     CaseDetailsResponse,
     CaseResponse,
@@ -14,7 +14,7 @@ from .schemas import (
     GetCasesQuery,
     GetCasesResponse,
 )
-from .service import CaseService
+from src.app.services.case.service import CaseService
 
 logger = logging.getLogger(__name__)
 

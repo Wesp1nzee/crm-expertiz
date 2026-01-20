@@ -17,9 +17,6 @@ class ContactType(str, Enum):
     individual = "individual"
 
 
-# --- Contact Schemas ---
-
-
 class ContactBase(BaseModel):
     name: str = Field(..., max_length=255, examples=["Иванов Иван Иванович"])
     position: str | None = Field(None, max_length=255, examples=["Главный юрист"])
@@ -57,9 +54,6 @@ class ContactResponse(ContactBase):
     model_config = ConfigDict(from_attributes=True)
 
 
-# --- Client Schemas ---
-
-
 class ClientBase(BaseModel):
     name: str = Field(..., max_length=255, examples=['ООО "Эксперт-Групп"'])
     short_name: str | None = Field(None, max_length=100)
@@ -74,7 +68,6 @@ class ClientBase(BaseModel):
 class ClientCreate(ClientBase):
     """Схема создания клиента"""
 
-    # Можно добавить возможность сразу создать основного контакта при создании клиента
     initial_contact: ContactBase | None = None
 
 
@@ -105,7 +98,6 @@ class ClientFullResponse(ClientShortResponse):
 
     updated_at: datetime
     contacts: list[ContactResponse] = []
-    # cases_count: int = 0  # Можно будет добавить позже через проперти
 
     model_config = ConfigDict(from_attributes=True)
 

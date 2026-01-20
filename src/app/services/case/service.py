@@ -4,8 +4,8 @@ from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import Case, CaseStatus
-from .schemas import (
+from src.app.services.case.models import Case, CaseStatus
+from src.app.services.case.schemas import (
     CaseCreateRequest,
     CaseResponse,
     CasesSummary,

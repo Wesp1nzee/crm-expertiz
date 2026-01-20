@@ -8,10 +8,10 @@ from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from ...core.database.base import Base
+from src.app.core.database.base import Base
 
 if TYPE_CHECKING:
-    from ..case import Case
+    from src.app.services.case import Case
 
 
 class ClientType(str, Enum):

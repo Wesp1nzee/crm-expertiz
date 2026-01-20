@@ -4,8 +4,8 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from .models import Client, Contact
-from .schemas import (
+from src.app.services.client.models import Client, Contact
+from src.app.services.client.schemas import (
     ClientCreate,
     ClientFilters,
     ClientFullResponse,
