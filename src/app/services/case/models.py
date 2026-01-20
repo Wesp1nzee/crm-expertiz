@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import uuid
 from datetime import datetime
 from decimal import Decimal
@@ -13,6 +15,8 @@ from src.app.core.database.base import Base
 
 if TYPE_CHECKING:
     from src.app.services.client import Client
+    from src.app.services.document import Document
+    from src.app.services.expert import Expert
 
 
 class CaseStatus(str, Enum):
@@ -56,8 +60,8 @@ class Case(Base):
         default=CaseStatus.in_work,
         index=True,
     )  # Статус дела
-    assigned_expert_id: Mapped[str | None] = mapped_column(
-        String(50)
+    assigned_expert_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("experts.id", ondelete="SET NULL"), nullable=True
     )  # ID назначенного эксперта
     start_date: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
@@ -99,6 +103,11 @@ class Case(Base):
     client: Mapped[Client] = relationship(
         "Client", back_populates="cases"
     )  # Связь с клиентом
+
+    expert: Mapped[Expert | None] = relationship("Expert", back_populates="cases")
+    documents: Mapped[list[Document]] = relationship(
+        "Document", back_populates="case", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         Index("ix_cases_client_status", "client_id", "status"),
