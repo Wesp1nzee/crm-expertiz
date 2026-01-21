@@ -95,7 +95,7 @@ class CaseService:
         if query_params.status:
             stmt = stmt.where(Case.status.in_(query_params.status))
         if query_params.expert_id:
-            stmt = stmt.where(Case.assigned_expert_id == query_params.expert_id)
+            stmt = stmt.where(Case.assigned_user_id == query_params.expert_id)
         if query_params.client_id:
             stmt = stmt.where(Case.client_id == query_params.client_id)
         if query_params.start_date:

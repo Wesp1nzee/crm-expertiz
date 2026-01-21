@@ -1,8 +1,8 @@
-"""описание миграции
+"""Initial with User model
 
-Revision ID: c22bd4f05ce1
+Revision ID: 7100554be6e6
 Revises:
-Create Date: 2026-01-19 19:18:49.961156
+Create Date: 2026-01-21 23:10:05.147836
 
 """
 
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = "c22bd4f05ce1"
+revision: str = "7100554be6e6"
 down_revision: str | Sequence[str] | None = None
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
@@ -51,10 +51,43 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.PrimaryKeyConstraint("id"),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_clients")),
     )
     op.create_index(op.f("ix_clients_inn"), "clients", ["inn"], unique=True)
     op.create_index(op.f("ix_clients_name"), "clients", ["name"], unique=False)
+    op.create_table(
+        "users",
+        sa.Column("id", sa.UUID(), nullable=False),
+        sa.Column("email", sa.String(length=255), nullable=False),
+        sa.Column("hashed_password", sa.String(length=255), nullable=False),
+        sa.Column(
+            "role",
+            sa.Enum(
+                "CEO",
+                "ACCOUNTANT",
+                "EXPERT",
+                "ADMIN",
+                name="userrole",
+                native_enum=False,
+            ),
+            nullable=False,
+        ),
+        sa.Column("full_name", sa.String(length=255), nullable=False),
+        sa.Column("specialization", sa.String(length=255), nullable=True),
+        sa.Column("smtp_host", sa.String(length=255), nullable=True),
+        sa.Column("smtp_port", sa.Integer(), nullable=True),
+        sa.Column("smtp_user", sa.String(length=255), nullable=True),
+        sa.Column("encrypted_smtp_password", sa.Text(), nullable=True),
+        sa.Column("settings", sa.JSON(), server_default="{}", nullable=True),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_users")),
+    )
+    op.create_index(op.f("ix_users_email"), "users", ["email"], unique=True)
     op.create_table(
         "cases",
         sa.Column("id", sa.UUID(), nullable=False),
@@ -80,7 +113,7 @@ def upgrade() -> None:
             ),
             nullable=False,
         ),
-        sa.Column("assigned_expert_id", sa.String(length=50), nullable=True),
+        sa.Column("assigned_user_id", sa.UUID(), nullable=True),
         sa.Column("start_date", sa.DateTime(timezone=True), nullable=False),
         sa.Column("deadline", sa.DateTime(timezone=True), nullable=False),
         sa.Column("completion_date", sa.DateTime(timezone=True), nullable=True),
@@ -121,8 +154,19 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
-        sa.ForeignKeyConstraint(["client_id"], ["clients.id"], ondelete="CASCADE"),
-        sa.PrimaryKeyConstraint("id"),
+        sa.ForeignKeyConstraint(
+            ["assigned_user_id"],
+            ["users.id"],
+            name=op.f("fk_cases_assigned_user_id_users"),
+            ondelete="SET NULL",
+        ),
+        sa.ForeignKeyConstraint(
+            ["client_id"],
+            ["clients.id"],
+            name=op.f("fk_cases_client_id_clients"),
+            ondelete="CASCADE",
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_cases")),
     )
     op.create_index(op.f("ix_cases_case_number"), "cases", ["case_number"], unique=True)
     op.create_index(
@@ -164,8 +208,61 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.ForeignKeyConstraint(["client_id"], ["clients.id"], ondelete="CASCADE"),
-        sa.PrimaryKeyConstraint("id"),
+        sa.ForeignKeyConstraint(
+            ["client_id"],
+            ["clients.id"],
+            name=op.f("fk_contacts_client_id_clients"),
+            ondelete="CASCADE",
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_contacts")),
+    )
+    op.create_table(
+        "documents",
+        sa.Column("id", sa.UUID(), nullable=False),
+        sa.Column("case_id", sa.UUID(), nullable=False),
+        sa.Column("title", sa.String(length=255), nullable=False),
+        sa.Column("original_filename", sa.String(length=255), nullable=False),
+        sa.Column("file_path", sa.Text(), nullable=False),
+        sa.Column("file_size", sa.BigInteger(), nullable=False),
+        sa.Column("mime_type", sa.String(length=100), nullable=False),
+        sa.Column("file_extension", sa.String(length=10), nullable=False),
+        sa.Column("version", sa.Integer(), nullable=False),
+        sa.Column("is_archived", sa.Boolean(), server_default="false", nullable=False),
+        sa.Column("uploaded_by_id", sa.UUID(), nullable=True),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.ForeignKeyConstraint(
+            ["case_id"],
+            ["cases.id"],
+            name=op.f("fk_documents_case_id_cases"),
+            ondelete="CASCADE",
+        ),
+        sa.ForeignKeyConstraint(
+            ["uploaded_by_id"],
+            ["users.id"],
+            name=op.f("fk_documents_uploaded_by_id_users"),
+            ondelete="SET NULL",
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_documents")),
+    )
+    op.create_index(
+        op.f("ix_documents_case_id"), "documents", ["case_id"], unique=False
+    )
+    op.create_index(
+        op.f("ix_documents_uploaded_by_id"),
+        "documents",
+        ["uploaded_by_id"],
+        unique=False,
     )
     # ### end Alembic commands ###
 
@@ -173,6 +270,9 @@ def upgrade() -> None:
 def downgrade() -> None:
     """Downgrade schema."""
     # ### commands auto generated by Alembic - please adjust! ###
+    op.drop_index(op.f("ix_documents_uploaded_by_id"), table_name="documents")
+    op.drop_index(op.f("ix_documents_case_id"), table_name="documents")
+    op.drop_table("documents")
     op.drop_table("contacts")
     op.drop_index(op.f("ix_cases_status"), table_name="cases")
     op.drop_index(op.f("ix_cases_number"), table_name="cases")
@@ -181,6 +281,8 @@ def downgrade() -> None:
     op.drop_index("ix_cases_client_status", table_name="cases")
     op.drop_index(op.f("ix_cases_case_number"), table_name="cases")
     op.drop_table("cases")
+    op.drop_index(op.f("ix_users_email"), table_name="users")
+    op.drop_table("users")
     op.drop_index(op.f("ix_clients_name"), table_name="clients")
     op.drop_index(op.f("ix_clients_inn"), table_name="clients")
     op.drop_table("clients")
