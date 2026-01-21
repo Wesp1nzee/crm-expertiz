@@ -64,4 +64,6 @@ class Document(Base):
     )
 
     case: Mapped[Case] = relationship("Case", back_populates="documents")
-    uploaded_by: Mapped[User] = relationship("User", back_populates="documents")
+    uploaded_by: Mapped[User] = relationship(
+        "User", back_populates="uploaded_documents"
+    )
