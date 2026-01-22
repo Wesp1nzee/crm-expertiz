@@ -1,27 +1,52 @@
 import uuid
 from datetime import datetime
+from enum import Enum
 
 from pydantic import BaseModel, ConfigDict
+
+
+class EntryType(str, Enum):
+    FOLDER = "folder"
+    FILE = "file"
+
+
+class FolderBase(BaseModel):
+    name: str
+    parent_id: uuid.UUID | None = None
+
+
+class FolderCreate(FolderBase):
+    pass
+
+
+class FolderResponse(FolderBase):
+    id: uuid.UUID
+    created_by_id: uuid.UUID | None
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
 
 
 class DocumentResponse(BaseModel):
     id: uuid.UUID
     case_id: uuid.UUID | None
+    folder_id: uuid.UUID | None
     title: str
-    original_filename: str
     file_size: int
-    mime_type: str
     file_extension: str
-    version: int
+    uploaded_by_id: uuid.UUID | None
     created_at: datetime
-    download_url: str | None = None
-
     model_config = ConfigDict(from_attributes=True)
 
 
-class DocumentUpdate(BaseModel):
-    title: str | None = None
-    is_archived: bool | None = None
+class FileSystemEntry(BaseModel):
+    id: uuid.UUID
+    name: str
+    type: EntryType
+    size: int | None = None
+    extension: str | None = None
+    created_at: datetime
+    created_by_id: uuid.UUID | None
+    parent_id: uuid.UUID | None
 
 
 class DocumentDownloadUrl(BaseModel):
