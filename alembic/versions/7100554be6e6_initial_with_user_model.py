@@ -29,9 +29,7 @@ def upgrade() -> None:
         sa.Column("short_name", sa.String(length=100), nullable=True),
         sa.Column(
             "type",
-            sa.Enum(
-                "legal", "individual", "court", name="clienttype", native_enum=False
-            ),
+            sa.Enum("legal", "individual", "court", name="clienttype", native_enum=False),
             nullable=False,
         ),
         sa.Column("inn", sa.String(length=12), nullable=True),
@@ -169,9 +167,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id", name=op.f("pk_cases")),
     )
     op.create_index(op.f("ix_cases_case_number"), "cases", ["case_number"], unique=True)
-    op.create_index(
-        "ix_cases_client_status", "cases", ["client_id", "status"], unique=False
-    )
+    op.create_index("ix_cases_client_status", "cases", ["client_id", "status"], unique=False)
     op.create_index(op.f("ix_cases_deadline"), "cases", ["deadline"], unique=False)
     op.create_index(op.f("ix_cases_deleted_at"), "cases", ["deleted_at"], unique=False)
     op.create_index(op.f("ix_cases_number"), "cases", ["number"], unique=True)
@@ -255,9 +251,7 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_documents")),
     )
-    op.create_index(
-        op.f("ix_documents_case_id"), "documents", ["case_id"], unique=False
-    )
+    op.create_index(op.f("ix_documents_case_id"), "documents", ["case_id"], unique=False)
     op.create_index(
         op.f("ix_documents_uploaded_by_id"),
         "documents",

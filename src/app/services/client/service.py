@@ -45,11 +45,7 @@ class ClientService:
 
     async def get_client_by_id(self, client_id: str) -> ClientFullResponse | None:
         """Получает полную информацию о клиенте с его контактами"""
-        stmt = (
-            select(Client)
-            .options(selectinload(Client.contacts))
-            .where(Client.id == uuid.UUID(client_id))
-        )
+        stmt = select(Client).options(selectinload(Client.contacts)).where(Client.id == uuid.UUID(client_id))
         result = await self.db.execute(stmt)
         client = result.scalars().first()
 
@@ -76,9 +72,7 @@ class ClientService:
         total_count = (await self.db.execute(count_stmt)).scalar() or 0
 
         offset = (filters.page - 1) * filters.limit
-        stmt = (
-            stmt.order_by(Client.created_at.desc()).offset(offset).limit(filters.limit)
-        )
+        stmt = stmt.order_by(Client.created_at.desc()).offset(offset).limit(filters.limit)
 
         result = await self.db.execute(stmt)
         clients = result.scalars().all()
@@ -93,9 +87,7 @@ class ClientService:
             pages=total_pages,
         )
 
-    async def update_client(
-        self, client_id: str, update_data: ClientUpdate
-    ) -> ClientFullResponse | None:
+    async def update_client(self, client_id: str, update_data: ClientUpdate) -> ClientFullResponse | None:
         """Обновляет данные клиента"""
         stmt = select(Client).where(Client.id == uuid.UUID(client_id))
         result = await self.db.execute(stmt)

@@ -27,9 +27,7 @@ router = APIRouter(prefix="/api/cases", tags=["Cases"])
     summary="Получить список дел",
     description="Возвращает список дел с фильтрацией, пагинацией и статистикой",
 )
-async def get_cases(
-    params: GetCasesQuery = Depends(), db: AsyncSession = Depends(get_db)
-) -> GetCasesResponse:
+async def get_cases(params: GetCasesQuery = Depends(), db: AsyncSession = Depends(get_db)) -> GetCasesResponse:
     service = CaseService(db)
     try:
         return await service.get_cases(params)
@@ -56,9 +54,7 @@ async def create_case(
     try:
         return await service.create_case(case_data)
     except ValueError as err:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(err)
-        ) from err
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err)) from err
     except IntegrityError as err:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -78,20 +74,14 @@ async def create_case(
     summary="Детальная информация о деле",
     description="Возвращает полные данные дела, включая связи и историю",
 )
-async def get_case_details(
-    case_id: uuid.UUID, db: AsyncSession = Depends(get_db)
-) -> CaseDetailsResponse:
+async def get_case_details(case_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> CaseDetailsResponse:
     service = CaseService(db)
     case_response = await service.get_case_by_id(str(case_id))
 
     if not case_response:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Дело не найдено"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Дело не найдено")
 
-    return CaseDetailsResponse(
-        case=case_response, assigned_experts=[], documents=[], events=[], history=[]
-    )
+    return CaseDetailsResponse(case=case_response, assigned_experts=[], documents=[], events=[], history=[])
 
 
 @router.patch(
@@ -100,21 +90,15 @@ async def get_case_details(
     summary="Обновить данные дела",
     description="Частичное обновление информации по существующему делу",
 )
-async def update_case(
-    case_id: uuid.UUID, case_data: CaseUpdateRequest, db: AsyncSession = Depends(get_db)
-) -> CaseResponse:
+async def update_case(case_id: uuid.UUID, case_data: CaseUpdateRequest, db: AsyncSession = Depends(get_db)) -> CaseResponse:
     service = CaseService(db)
     try:
         result = await service.update_case(str(case_id), case_data)
         if not result:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Дело не найдено"
-            )
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Дело не найдено")
         return result
     except ValueError as err:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(err)
-        ) from err
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err)) from err
     except Exception as err:
         logger.exception(f"Error updating case {case_id}")
         raise HTTPException(
@@ -133,7 +117,5 @@ async def delete_case(case_id: uuid.UUID, db: AsyncSession = Depends(get_db)) ->
     service = CaseService(db)
     success = await service.soft_delete_case(str(case_id))
     if not success:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Дело не найдено"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Дело не найдено")
     return None

@@ -10,12 +10,8 @@ from src.main import app
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
-engine_test = create_async_engine(
-    TEST_DATABASE_URL, connect_args={"check_same_thread": False}
-)
-AsyncSessionLocalTest = async_sessionmaker(
-    engine_test, expire_on_commit=False, class_=AsyncSession
-)
+engine_test = create_async_engine(TEST_DATABASE_URL, connect_args={"check_same_thread": False})
+AsyncSessionLocalTest = async_sessionmaker(engine_test, expire_on_commit=False, class_=AsyncSession)
 
 
 @pytest_asyncio.fixture(scope="session", autouse=True)

@@ -24,9 +24,7 @@ async def test_create_client(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_get_clients_list(client: AsyncClient) -> None:
-    await client.post(
-        "/api/clients", json={"name": "Второй Клиент", "type": "individual"}
-    )
+    await client.post("/api/clients", json={"name": "Второй Клиент", "type": "individual"})
 
     response = await client.get("/api/clients")
 

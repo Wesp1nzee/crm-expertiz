@@ -25,14 +25,10 @@ if TYPE_CHECKING:
 class Document(Base):
     __tablename__ = "documents"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
     # Привязка к делу
-    case_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("cases.id", ondelete="CASCADE"), nullable=False, index=True
-    )
+    case_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), nullable=True, index=True)
 
     # Основная информация о файле
     title: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -46,24 +42,14 @@ class Document(Base):
 
     # Контроль версий и состояния
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
-    is_archived: Mapped[bool] = mapped_column(
-        Boolean, default=False, server_default="false"
-    )
+    is_archived: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
     # Аудит загрузки
-    uploaded_by_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
-    )
+    uploaded_by_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
 
     # Временные метки
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     case: Mapped[Case] = relationship("Case", back_populates="documents")
-    uploaded_by: Mapped[User] = relationship(
-        "User", back_populates="uploaded_documents"
-    )
+    uploaded_by: Mapped[User] = relationship("User", back_populates="uploaded_documents")

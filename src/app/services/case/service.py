@@ -36,9 +36,7 @@ class CaseService:
 
     async def get_case_by_id(self, case_id: str) -> CaseResponse | None:
         """Получает дело по ID"""
-        stmt = select(Case).where(
-            Case.id == uuid.UUID(case_id), Case.deleted_at.is_(None)
-        )
+        stmt = select(Case).where(Case.id == uuid.UUID(case_id), Case.deleted_at.is_(None))
         result = await self.db.execute(stmt)
         case = result.scalars().first()
 
@@ -47,13 +45,9 @@ class CaseService:
 
         return CaseResponse.model_validate(case)
 
-    async def update_case(
-        self, case_id: str, update_data: CaseUpdateRequest
-    ) -> CaseResponse | None:
+    async def update_case(self, case_id: str, update_data: CaseUpdateRequest) -> CaseResponse | None:
         """Обновляет дело"""
-        stmt = select(Case).where(
-            Case.id == uuid.UUID(case_id), Case.deleted_at.is_(None)
-        )
+        stmt = select(Case).where(Case.id == uuid.UUID(case_id), Case.deleted_at.is_(None))
         result = await self.db.execute(stmt)
         case = result.scalars().first()
 
@@ -75,9 +69,7 @@ class CaseService:
 
     async def soft_delete_case(self, case_id: str) -> bool:
         """Мягкое удаление дела"""
-        stmt = select(Case).where(
-            Case.id == uuid.UUID(case_id), Case.deleted_at.is_(None)
-        )
+        stmt = select(Case).where(Case.id == uuid.UUID(case_id), Case.deleted_at.is_(None))
         result = await self.db.execute(stmt)
         case = result.scalars().first()
 
@@ -142,9 +134,7 @@ class CaseService:
 
         overdue_count = (await self.db.execute(overdue_stmt)).scalar() or 0
 
-        total_pages = max(
-            1, (total_count + query_params.limit - 1) // query_params.limit
-        )
+        total_pages = max(1, (total_count + query_params.limit - 1) // query_params.limit)
 
         return GetCasesResponse(
             data=[CaseResponse.model_validate(c) for c in cases],

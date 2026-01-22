@@ -24,9 +24,7 @@ router = APIRouter(prefix="/api/clients", tags=["Clients"])
     summary="Создать нового клиента",
     description="Создает клиента и опционально первый контакт",
 )
-async def create_client(
-    client_data: ClientCreate, db: AsyncSession = Depends(get_db)
-) -> ClientFullResponse:
+async def create_client(client_data: ClientCreate, db: AsyncSession = Depends(get_db)) -> ClientFullResponse:
     service = ClientService(db)
     try:
         return await service.create_client(client_data)
@@ -72,9 +70,7 @@ async def get_clients(
     summary="Получить клиента по ID",
     description="Возвращает полную карточку клиента со всеми контактами",
 )
-async def get_client(
-    client_id: uuid.UUID, db: AsyncSession = Depends(get_db)
-) -> ClientFullResponse:
+async def get_client(client_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> ClientFullResponse:
     service = ClientService(db)
     client = await service.get_client_by_id(str(client_id))
 
@@ -93,9 +89,7 @@ async def get_client(
     summary="Обновить данные клиента",
     description="Частичное обновление полей клиента",
 )
-async def update_client(
-    client_id: uuid.UUID, update_data: ClientUpdate, db: AsyncSession = Depends(get_db)
-) -> ClientFullResponse:
+async def update_client(client_id: uuid.UUID, update_data: ClientUpdate, db: AsyncSession = Depends(get_db)) -> ClientFullResponse:
     service = ClientService(db)
     try:
         updated_client = await service.update_client(str(client_id), update_data)
@@ -118,9 +112,7 @@ async def update_client(
     summary="Удалить клиента",
     description="Полное удаление клиента и всех его контактов",
 )
-async def delete_client(
-    client_id: uuid.UUID, db: AsyncSession = Depends(get_db)
-) -> None:
+async def delete_client(client_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> None:
     service = ClientService(db)
     success = await service.delete_client(str(client_id))
     if not success:

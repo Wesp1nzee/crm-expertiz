@@ -4,4 +4,11 @@ from src.app.services.client import Client, Contact
 from src.app.services.document import Document
 from src.app.services.user import User
 
-__all__ = ["Base"]
+__all__ = [
+    "Base",
+    "User",
+    "Case",
+    "Client",
+    "Contact",
+    "Document",
+]
