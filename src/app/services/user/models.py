@@ -1,50 +1,69 @@
+import enum
 import uuid
 from datetime import datetime
-from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import JSON, UUID, DateTime, String, Text, func
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.sql import func
 
 from src.app.core.database.base import Base
 
 if TYPE_CHECKING:
-    from src.app.services.case.models import Case
-    from src.app.services.document.models import Document
+    from src.app.services.case import Case
+    from src.app.services.document import Document
 
 
-class UserRole(str, Enum):
+class UserRole(str, enum.Enum):
+    ADMIN = "admin"
     CEO = "ceo"
     ACCOUNTANT = "accountant"
     EXPERT = "expert"
-    ADMIN = "admin"
 
 
 class User(Base):
     __tablename__ = "users"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
-    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
-    role: Mapped[UserRole] = mapped_column(SQLEnum(UserRole, native_enum=False), default=UserRole.EXPERT, nullable=False)
-
-    # Профиль
+    hashed_password: Mapped[str] = mapped_column(String(1024), nullable=False)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[UserRole] = mapped_column(SQLEnum(UserRole, native_enum=False), nullable=False)
+
+    is_active: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    can_authenticate: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    last_login: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    settings: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, server_default="{}")
     specialization: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
-    # Настройки почты
-    smtp_host: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    smtp_port: Mapped[int | None] = mapped_column(nullable=True)
-    smtp_user: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    encrypted_smtp_password: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    # настройки
-    settings: Mapped[dict[str, str | int | bool | None] | None] = mapped_column(JSON, default={}, server_default="{}")
-
-    # Временные метки
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-    # Связи
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     cases: Mapped[list[Case]] = relationship("Case", back_populates="assigned_user")
+    email_config: Mapped[UserEmailConfig | None] = relationship(
+        "UserEmailConfig", back_populates="user", uselist=False, cascade="all, delete-orphan"
+    )
     uploaded_documents: Mapped[list[Document]] = relationship("Document", back_populates="uploaded_by")
+
+
+class UserEmailConfig(Base):
+    __tablename__ = "user_email_configs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), unique=True)
+
+    smtp_host: Mapped[str] = mapped_column(String(255))
+    smtp_port: Mapped[int] = mapped_column(Integer)
+    smtp_user: Mapped[str] = mapped_column(String(255))
+    smtp_password: Mapped[str] = mapped_column(Text)  # Encrypted
+
+    imap_host: Mapped[str] = mapped_column(String(255))
+    imap_port: Mapped[int] = mapped_column(Integer)
+    imap_user: Mapped[str] = mapped_column(String(255))
+    imap_password: Mapped[str] = mapped_column(Text)  # Encrypted
+
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sync_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+
+    user: Mapped[User] = relationship("User", back_populates="email_config")
