@@ -14,6 +14,7 @@ from src.app.core.database.base import Base
 if TYPE_CHECKING:
     from src.app.services.client import Client
     from src.app.services.document import Document
+    from src.app.services.mail import MailMessage
     from src.app.services.user import User
 
 
@@ -68,5 +69,6 @@ class Case(Base):
     client: Mapped[Client] = relationship("Client", back_populates="cases")
     assigned_user: Mapped[User | None] = relationship("User", back_populates="cases")
     documents: Mapped[list[Document]] = relationship("Document", back_populates="case", cascade="all, delete-orphan")
+    mail_messages: Mapped[list[MailMessage]] = relationship("MailMessage", back_populates="case")
 
     __table_args__ = (Index("ix_cases_client_status", "client_id", "status"),)  # Индекс для фильтрации по клиенту и статусу

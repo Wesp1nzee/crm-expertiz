@@ -1,1 +1,3 @@
-from src.app.services.case.models import Case as Case
+from src.app.services.case.models import Case
+
+__all__ = ["Case"]

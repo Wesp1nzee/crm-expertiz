@@ -13,6 +13,7 @@ from src.app.core.database.base import Base
 if TYPE_CHECKING:
     from src.app.services.case import Case
     from src.app.services.document import Document
+    from src.app.services.mail import MailMessage
 
 
 class UserRole(str, enum.Enum):
@@ -45,6 +46,7 @@ class User(Base):
         "UserEmailConfig", back_populates="user", uselist=False, cascade="all, delete-orphan"
     )
     uploaded_documents: Mapped[list[Document]] = relationship("Document", back_populates="uploaded_by")
+    mail_messages: Mapped[list[MailMessage]] = relationship("MailMessage", back_populates="user")
 
 
 class UserEmailConfig(Base):
