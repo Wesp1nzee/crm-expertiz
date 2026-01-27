@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, UUID, Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -12,6 +12,7 @@ from src.app.core.database.base import Base
 
 if TYPE_CHECKING:
     from src.app.services.case import Case
+    from src.app.services.company import Company
     from src.app.services.document import Document
     from src.app.services.mail import MailMessage
 
@@ -45,8 +46,10 @@ class User(Base):
     email_config: Mapped[UserEmailConfig | None] = relationship(
         "UserEmailConfig", back_populates="user", uselist=False, cascade="all, delete-orphan"
     )
+    company_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
     uploaded_documents: Mapped[list[Document]] = relationship("Document", back_populates="uploaded_by")
     mail_messages: Mapped[list[MailMessage]] = relationship("MailMessage", back_populates="user")
+    company: Mapped[Company] = relationship("Company", back_populates="users")
 
 
 class UserEmailConfig(Base):

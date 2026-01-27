@@ -11,6 +11,7 @@ from src.app.core.redis import get_redis_client
 from src.app.core.storage.s3 import s3_storage
 from src.app.services.case.endpoints import router as cases_router
 from src.app.services.client.endpoints import router as client_router
+from src.app.services.company.endpoints import router as company_router
 from src.app.services.document.endpoints import router as document_router
 from src.app.services.user.endpoints import router as user_router
 from src.app.services.user.setup import create_first_admin
@@ -64,6 +65,7 @@ app.include_router(cases_router)
 app.include_router(client_router)
 app.include_router(document_router)
 app.include_router(user_router)
+app.include_router(company_router)
 
 
 if __name__ == "__main__":

@@ -24,6 +24,8 @@ dependencies = [
     "redis[hiredis]>=7.1.0",
     "bcrypt>=5.0.0",
     "pre-commit>=4.5.1",
+    "aiosmtplib>=5.0.0",
+    "aioimaplib>=2.0.1",
 ]
 
 [dependency-groups]

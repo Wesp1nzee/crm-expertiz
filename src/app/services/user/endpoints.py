@@ -15,7 +15,7 @@ from src.app.services.user.schemas import (
 )
 from src.app.services.user.service import UserService
 
-router = APIRouter(prefix="/users", tags=["Users & Auth"])
+router = APIRouter(prefix="/api/users", tags=["Users & Auth"])
 
 
 @router.post("/login", response_model=UserRead)
