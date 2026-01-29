@@ -1,6 +1,7 @@
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from src.app.core.auth.session import SessionManager
 from src.app.core.database.session import get_db
@@ -20,7 +21,7 @@ async def get_current_user(request: Request, db: AsyncSession = Depends(get_db))
     if not session_data:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Сессия истекла или недействительна")
 
-    result = await db.execute(select(User).where(User.id == session_data["user_id"]))
+    result = await db.execute(select(User).options(selectinload(User.company)).where(User.id == session_data["user_id"]))
     user = result.scalar_one_or_none()
 
     if not user:
