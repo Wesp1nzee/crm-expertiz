@@ -34,7 +34,7 @@ async def register_company(
 
 
 @router.get("/me", response_model=CompanyResponse)
-async def get_my_company(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> Company:
+async def get_my_company(current_user: User = Depends(get_current_user)) -> Company:
     """
     Получение данных о компании, к которой принадлежит текущий пользователь.
     """

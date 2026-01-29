@@ -10,6 +10,7 @@ from src.app.services.user.models import User
 
 
 async def get_current_user(request: Request, db: AsyncSession = Depends(get_db)) -> User:
+    # TODO: Убрать sql запрос и заменить на redis
     session_id = request.cookies.get("session_id")
     if not session_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Не авторизован")
