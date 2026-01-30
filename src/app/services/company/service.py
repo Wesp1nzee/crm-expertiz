@@ -47,9 +47,7 @@ class CompanyService:
             redis_client = await get_redis_client()
             session_manager = SessionManager(redis_client)
 
-            session_id = await session_manager.create_session(
-                user_id=str(new_ceo.id), data={"role": new_ceo.role, "company_id": str(new_company.id)}
-            )
+            session_id = await session_manager.create_session(new_ceo)
 
             return new_company, session_id
 

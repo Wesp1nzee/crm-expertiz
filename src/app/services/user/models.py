@@ -32,7 +32,7 @@ class User(Base):
     hashed_password: Mapped[str] = mapped_column(String(1024), nullable=False)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[UserRole] = mapped_column(SQLEnum(UserRole, native_enum=False), nullable=False)
-
+    # TODO: Добавить атрибут online
     is_active: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     can_authenticate: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     last_login: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

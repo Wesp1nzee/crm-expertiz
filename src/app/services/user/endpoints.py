@@ -18,23 +18,20 @@ from src.app.services.user.service import UserService
 router = APIRouter(prefix="/api/users", tags=["Users & Auth"])
 
 
+# TODO: Добавить проверку на повторную авторизацию
 @router.post("/login", response_model=UserRead)
 async def login(credentials: UserLoginSchema, response: Response, db: AsyncSession = Depends(get_db)) -> User:
     user_service = UserService(db)
     user = await user_service.authenticate(credentials)
-
     if not user or not user.can_authenticate:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Неверные учетные данные или доступ запрещен")
 
     redis_client = await get_redis_client()
     session_manager = SessionManager(redis_client)
-
-    session_id = await session_manager.create_session(user_id=str(user.id), data={"role": user.role})
+    session_id = await session_manager.create_session(user=user)
 
     response.set_cookie(key="session_id", value=session_id, httponly=True, secure=True, samesite="lax", max_age=86400)
-
     await user_service.set_online_status(user, True)
-
     return user
 
 
@@ -57,6 +54,7 @@ async def logout(
     return LogoutResponse()
 
 
+# TODO: Исправить типы response /docs
 @router.get("/me", response_model=UserRead)
 async def get_me(current_user: User = Depends(get_current_user)) -> User:
     return current_user

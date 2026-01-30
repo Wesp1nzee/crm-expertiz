@@ -45,9 +45,8 @@ class UserRead(UserBase):
     id: UUID
     is_active: bool
     can_authenticate: bool
-    last_login: datetime | None = None
-    created_at: datetime
-    updated_at: datetime
+    company_id: UUID
+    settings: dict[str, Any]
 
     model_config = ConfigDict(from_attributes=True)
 

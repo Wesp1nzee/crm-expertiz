@@ -4,9 +4,9 @@ from datetime import UTC, datetime
 from fastapi import HTTPException, status
 from sqlalchemy import asc, desc, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from src.app.core.auth.security import hash_password, verify_password
-from src.app.core.auth.session import SessionManager
 from src.app.services.user.models import User, UserEmailConfig
 from src.app.services.user.schemas import (
     ROLE_PERMISSIONS,
@@ -17,31 +17,30 @@ from src.app.services.user.schemas import (
 
 
 class UserService:
-    def __init__(self, db: AsyncSession, session_manager: SessionManager | None = None) -> None:
+    def __init__(self, db: AsyncSession) -> None:
         self.db = db
-        self.session_manager = session_manager
 
     async def authenticate(self, credentials: UserLoginSchema) -> User | None:
-        query = select(User).where(User.email == credentials.email)
+        query = select(User).options(selectinload(User.company)).where(User.email == credentials.email)  # Загрузить компанию
         result = await self.db.execute(query)
         user = result.scalar_one_or_none()
-
         if not user:
             return None
-
         if not verify_password(credentials.password, user.hashed_password):
             return None
-
         return user
 
     async def set_online_status(self, user: User, is_online: bool) -> None:
-        user.is_active = is_online
+        db_user = await self.db.get(User, user.id)
+        if not db_user:
+            raise HTTPException(status_code=404, detail="Пользователь не найден при попытке обновить статус.")
+
+        db_user.is_active = is_online
 
         if is_online:
-            user.last_login = datetime.now(UTC)
+            db_user.last_login = datetime.now(UTC)
 
         await self.db.commit()
-        await self.db.refresh(user)
 
     async def create_user(self, creator: User, user_in: UserCreate) -> User:
         if user_in.role not in ROLE_PERMISSIONS.get(creator.role, []):
