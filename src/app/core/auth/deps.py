@@ -1,12 +1,10 @@
 from typing import Any
 from uuid import UUID
 
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import HTTPException, Request, status
 from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.auth.session import SessionManager
-from src.app.core.database.session import get_db
 from src.app.core.redis import get_redis_client
 from src.app.services.company.models import Company
 from src.app.services.user.models import User, UserRole
@@ -35,28 +33,28 @@ class CachedSessionData(BaseModel):
     company: CompanySessionData
 
 
-async def get_current_user(request: Request, db: AsyncSession = Depends(get_db)) -> User | None:
+async def get_current_user(request: Request) -> User | None:
     session_id = request.cookies.get("session_id")
     if not session_id:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Не авторизован")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пожалуйста, войдите в систему для доступа к этой странице")
 
     redis_client = await get_redis_client()
     session_manager = SessionManager(redis_client)
 
     session_data_raw = await session_manager.get_session(session_id)
     if not session_data_raw:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Сессия истекла или недействительна")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Время сессии истекло. Пожалуйста, войдите снова")
 
     try:
         cached_data = CachedSessionData.model_validate(session_data_raw)
     except Exception:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Данные сессии некорректны") from None
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Ошибка проверки данных сессии. Пожалуйста, войдите снова") from None
 
     user_info = cached_data.user
     company_info = cached_data.company
 
     if not user_info.can_authenticate:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Ваш аккаунт заблокирован")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Доступ к аккаунту временно ограничен")
 
     company_id_from_cache = company_info.id if company_info else None
     settings_from_cache = user_info.settings

@@ -18,11 +18,15 @@ from src.app.services.user.service import UserService
 router = APIRouter(prefix="/api/users", tags=["Users & Auth"])
 
 
-# TODO: Добавить проверку на повторную авторизацию
 @router.post("/login", response_model=UserRead)
-async def login(credentials: UserLoginSchema, response: Response, db: AsyncSession = Depends(get_db)) -> User:
+async def login(credentials: UserLoginSchema, request: Request, response: Response, db: AsyncSession = Depends(get_db)) -> User:
     user_service = UserService(db)
     user = await user_service.authenticate(credentials)
+
+    session_id = request.cookies.get("session_id")
+    if session_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Вы уже авторизованны")
+
     if not user or not user.can_authenticate:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Неверные учетные данные или доступ запрещен")
 
