@@ -1,3 +1,5 @@
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -73,6 +75,6 @@ async def create_user(user_in: UserCreate, db: AsyncSession = Depends(get_db), c
 @router.get("/", response_model=list[UserRead])
 async def list_users(
     params: UserFilterParams = Depends(), db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)
-) -> list[User]:
+) -> list[dict[Any, Any]]:
     user_service = UserService(db)
     return await user_service.get_users_list(current_user, params)

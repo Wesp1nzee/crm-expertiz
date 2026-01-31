@@ -78,7 +78,6 @@ class ClientService:
         clients = result.scalars().all()
 
         total_pages = max(1, (total_count + filters.limit - 1) // filters.limit)
-
         return ClientListResponse(
             items=[ClientShortResponse.model_validate(c) for c in clients],
             total=total_count,
