@@ -87,6 +87,13 @@ class UserFilterParams(BaseModel):
     limit: int = Field(20, ge=1, le=100)
 
 
+class SearchResultDTO(BaseModel):
+    id: UUID
+    name: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 ROLE_PERMISSIONS = {
     UserRole.ADMIN: [UserRole.ADMIN, UserRole.CEO, UserRole.ACCOUNTANT, UserRole.EXPERT],
     UserRole.CEO: [UserRole.ACCOUNTANT, UserRole.EXPERT],

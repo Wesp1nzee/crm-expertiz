@@ -44,7 +44,7 @@ class CalendarActivity(Base):
     company_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"), index=True)
     creator_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
-    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     color: Mapped[str | None] = mapped_column(String(20))
 
@@ -55,7 +55,7 @@ class CalendarActivity(Base):
     is_completed: Mapped[bool] = mapped_column(Boolean, default=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    location: Mapped[str | None] = mapped_column(String(500))
+    location: Mapped[str | None] = mapped_column(Text)
     status: Mapped[EventStatus] = mapped_column(SQLEnum(EventStatus, native_enum=False), default=EventStatus.SCHEDULED)
 
     case_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("cases.id", ondelete="SET NULL"), nullable=True)

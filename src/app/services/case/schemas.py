@@ -18,24 +18,27 @@ class CaseStatus(str, Enum):
 
 
 class CaseBase(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    client_id: uuid.UUID
     number: str = Field(..., max_length=50)
     case_number: str = Field(..., max_length=100)
     authority: str = Field(..., max_length=255)
-    client_id: uuid.UUID
     case_type: str = Field(..., max_length=100)
     object_type: str = Field(..., max_length=100)
     object_address: str
     status: CaseStatus = CaseStatus.in_work
+    assigned_user_id: uuid.UUID | None = None
     start_date: datetime
     deadline: datetime
+    completion_date: datetime | None = None
     cost: Decimal
-    plaintiff: str | None = None
-    defendant: str | None = None
     bank_transfer_amount: Decimal = Decimal("0.00")
     cash_amount: Decimal = Decimal("0.00")
     remaining_debt: Decimal = Decimal("0.00")
-    completion_date: datetime | None = None
-    assigned_expert_id: str | None = None
+    plaintiff: str | None = Field(None, max_length=255)
+    defendant: str | None = Field(None, max_length=255)
+    expert_painting: str | None = None
     archive_status: str | None = None
     remarks: str | None = None
 

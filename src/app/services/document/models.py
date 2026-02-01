@@ -62,8 +62,8 @@ class Document(Base):
     uploaded_by_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
 
     # Данные файла
-    title: Mapped[str] = mapped_column(String(255), nullable=False)
-    original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    original_filename: Mapped[str] = mapped_column(Text, nullable=False)
     file_path: Mapped[str] = mapped_column(Text, nullable=False)
     file_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
     mime_type: Mapped[str] = mapped_column(String(100), nullable=False)

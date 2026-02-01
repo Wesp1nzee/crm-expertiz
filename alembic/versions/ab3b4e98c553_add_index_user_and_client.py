@@ -1,16 +1,16 @@
-"""fix model User and Document
+"""add index user and client
 
-Revision ID: ebc8060eb98a
-Revises: 7100554be6e6
-Create Date: 2026-01-21 23:19:17.302486
+Revision ID: ab3b4e98c553
+Revises:
+Create Date: 2026-02-01 10:06:49.475458
 
 """
 
 from collections.abc import Sequence
 
 # revision identifiers, used by Alembic.
-revision: str = "ebc8060eb98a"
-down_revision: str | Sequence[str] | None = "7100554be6e6"
+revision: str = "ab3b4e98c553"
+down_revision: str | Sequence[str] | None = None
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

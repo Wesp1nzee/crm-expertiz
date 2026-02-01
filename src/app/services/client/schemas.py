@@ -1,6 +1,6 @@
-import uuid
 from datetime import datetime
 from enum import Enum
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
@@ -29,7 +29,7 @@ class ContactBase(BaseModel):
 class ContactCreate(ContactBase):
     """Схема для создания контакта напрямую (через /contacts)"""
 
-    client_id: uuid.UUID
+    client_id: UUID
 
 
 class ContactUpdate(BaseModel):
@@ -46,8 +46,8 @@ class ContactUpdate(BaseModel):
 class ContactResponse(ContactBase):
     """Схема ответа контакта"""
 
-    id: uuid.UUID
-    client_id: uuid.UUID
+    id: UUID
+    client_id: UUID
     created_at: datetime
     updated_at: datetime
 
@@ -87,7 +87,7 @@ class ClientUpdate(BaseModel):
 class ClientShortResponse(ClientBase):
     """Для списков (без тяжелых связей)"""
 
-    id: uuid.UUID
+    id: UUID
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -119,3 +119,10 @@ class ClientListResponse(BaseModel):
     page: int
     size: int
     pages: int
+
+
+class SearchResultDTO(BaseModel):
+    id: UUID
+    name: str
+
+    model_config = ConfigDict(from_attributes=True)

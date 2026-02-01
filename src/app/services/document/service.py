@@ -2,20 +2,25 @@ import asyncio
 import os
 import uuid
 
-from fastapi import UploadFile
+from fastapi import HTTPException, UploadFile, status
 from sqlalchemy import asc, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.storage.s3 import s3_storage
+from src.app.services.case.models import Case
 from src.app.services.document.models import Document, Folder
 from src.app.services.document.schemas import EntryType, FileSystemEntry, FolderCreate
+from src.app.services.user.models import UserRole
 
 
 class DocumentService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
-    async def create_folder(self, folder_data: FolderCreate, user_id: uuid.UUID | None) -> Folder:
+    async def create_folder(self, folder_data: FolderCreate, user_id: uuid.UUID, user_role: UserRole) -> Folder:
+        if user_role == UserRole.EXPERT:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Эксперт не может создавать папки")
+
         db_folder = Folder(**folder_data.model_dump(), created_by_id=user_id)
         self.db.add(db_folder)
         await self.db.commit()
@@ -31,6 +36,8 @@ class DocumentService:
         order: str = "desc",
         limit: int = 50,
         offset: int = 0,
+        user_id: uuid.UUID | None = None,
+        user_role: UserRole | None = None,
     ) -> list[FileSystemEntry]:
         sort_func = desc if order == "desc" else asc
 
@@ -47,6 +54,14 @@ class DocumentService:
         if case_id:
             folder_stmt = folder_stmt.where(Folder.case_id == case_id)
             doc_stmt = doc_stmt.where(Document.case_id == case_id)
+
+        if user_role == UserRole.EXPERT and case_id:
+            case = await self.db.get(Case, case_id)
+            if case and case.assigned_user_id != user_id:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="У вас нет доступа к этому делу")
+        elif user_role == UserRole.EXPERT and not case_id:
+            folder_stmt = folder_stmt.join(Case, Folder.case_id == Case.id).where(Case.assigned_user_id == user_id)
+            doc_stmt = doc_stmt.join(Case, Document.case_id == Case.id).where(Case.assigned_user_id == user_id)
 
         f_sort_col = getattr(Folder, sort_by if hasattr(Folder, sort_by) else "created_at")
         d_sort_col = getattr(Document, sort_by if hasattr(Document, sort_by) else "created_at")
@@ -83,11 +98,15 @@ class DocumentService:
     async def upload_document(
         self,
         file: UploadFile,
+        user_id: uuid.UUID,
+        user_role: UserRole,
         case_id: uuid.UUID | None = None,
         folder_id: uuid.UUID | None = None,
         title: str | None = None,
-        user_id: uuid.UUID | None = None,
     ) -> Document:
+        if user_role == UserRole.EXPERT:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Эксперт не может загружать документы")
+
         content = await file.read()
         file_ext = os.path.splitext(file.filename or "")[1].lower()
         s3_key = f"documents/{uuid.uuid4()}{file_ext}"
@@ -114,16 +133,29 @@ class DocumentService:
         await self.db.refresh(db_doc)
         return db_doc
 
-    async def get_presigned_url(self, doc_id: uuid.UUID) -> str | None:
+    async def get_presigned_url(self, doc_id: uuid.UUID, user_id: uuid.UUID, user_role: UserRole) -> str | None:
         res = await self.db.execute(select(Document).where(Document.id == doc_id))
         doc = res.scalar_one_or_none()
+
+        if not doc:
+            return None
+
+        if user_role == UserRole.EXPERT and doc.case_id:
+            case = await self.db.get(Case, doc.case_id)
+            if case and case.assigned_user_id != user_id:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="У вас нет доступа к документу в этом деле")
+
         return await s3_storage.get_download_url(doc.file_path) if doc else None
 
-    async def delete_document(self, doc_id: uuid.UUID) -> bool:
+    async def delete_document(self, doc_id: uuid.UUID, user_id: uuid.UUID, user_role: UserRole) -> bool:
+        if user_role == UserRole.EXPERT:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Эксперт не может удалять документы")
+
         res = await self.db.execute(select(Document).where(Document.id == doc_id))
         doc = res.scalar_one_or_none()
         if not doc:
             return False
+
         await s3_storage.delete_file(doc.file_path)
         await self.db.delete(doc)
         await self.db.commit()

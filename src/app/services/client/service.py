@@ -1,5 +1,7 @@
-import uuid
+from collections.abc import Sequence
+from uuid import UUID
 
+from fastapi import HTTPException, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -13,21 +15,26 @@ from src.app.services.client.schemas import (
     ClientShortResponse,
     ClientUpdate,
 )
+from src.app.services.user.models import UserRole
 
 
 class ClientService:
     def __init__(self, db_session: AsyncSession) -> None:
         self.db = db_session
 
-    async def create_client(self, client_data: ClientCreate) -> ClientFullResponse:
+    async def create_client(self, client_data: ClientCreate, company_id: UUID, user_role: UserRole) -> ClientFullResponse:
         """
         Создает клиента.
         Если переданы данные initial_contact, сразу создает и привязывает контакт.
         """
+        # Только администраторы, CEO и бухгалтеры могут создавать клиентов
+        if user_role == UserRole.EXPERT:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Эксперт не может создавать новых клиентов")
+
         contact_data = client_data.initial_contact
         client_dict = client_data.model_dump(exclude={"initial_contact"})
 
-        client = Client(**client_dict)
+        client = Client(**client_dict, company_id=company_id)
         self.db.add(client)
 
         if contact_data:
@@ -43,9 +50,9 @@ class ClientService:
 
         return ClientFullResponse.model_validate(client)
 
-    async def get_client_by_id(self, client_id: str) -> ClientFullResponse | None:
-        """Получает полную информацию о клиенте с его контактами"""
-        stmt = select(Client).options(selectinload(Client.contacts)).where(Client.id == uuid.UUID(client_id))
+    async def get_client_by_id(self, client_id: str, company_id: UUID, user_role: UserRole) -> ClientFullResponse | None:
+        """Получает полную информацию о клиенте с его контактами (только для своей компании)"""
+        stmt = select(Client).options(selectinload(Client.contacts)).where(Client.id == UUID(client_id), Client.company_id == company_id)
         result = await self.db.execute(stmt)
         client = result.scalars().first()
 
@@ -54,9 +61,9 @@ class ClientService:
 
         return ClientFullResponse.model_validate(client)
 
-    async def get_clients(self, filters: ClientFilters) -> ClientListResponse:
-        """Получает список клиентов с фильтрацией и пагинацией"""
-        stmt = select(Client)
+    async def get_clients(self, filters: ClientFilters, company_id: UUID, user_role: UserRole) -> ClientListResponse:
+        """Получает список клиентов с фильтрацией и пагинацией (только для своей компании)"""
+        stmt = select(Client).where(Client.company_id == company_id)
 
         if filters.type:
             stmt = stmt.where(Client.type == filters.type)
@@ -86,9 +93,13 @@ class ClientService:
             pages=total_pages,
         )
 
-    async def update_client(self, client_id: str, update_data: ClientUpdate) -> ClientFullResponse | None:
-        """Обновляет данные клиента"""
-        stmt = select(Client).where(Client.id == uuid.UUID(client_id))
+    async def update_client(self, client_id: str, update_data: ClientUpdate, company_id: UUID, user_role: UserRole) -> ClientFullResponse | None:
+        """Обновляет данные клиента (только для своей компании)"""
+
+        if user_role == UserRole.EXPERT:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Эксперт не может обновлять данные клиента")
+
+        stmt = select(Client).where(Client.id == UUID(client_id), Client.company_id == company_id)
         result = await self.db.execute(stmt)
         client = result.scalars().first()
 
@@ -100,11 +111,15 @@ class ClientService:
             setattr(client, field, value)
 
         await self.db.commit()
-        return await self.get_client_by_id(client_id)
+        return await self.get_client_by_id(str(client.id), company_id, user_role)
 
-    async def delete_client(self, client_id: str) -> bool:
-        """Удаляет клиента (каскадно удалятся и контакты из-за ondelete='CASCADE')"""
-        stmt = select(Client).where(Client.id == uuid.UUID(client_id))
+    async def delete_client(self, client_id: str, company_id: UUID, user_role: UserRole) -> bool:
+        """Удаляет клиента (каскадно удалятся и контакты из-за ondelete='CASCADE') (только для своей компании)"""
+
+        if user_role == UserRole.EXPERT:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Эксперт не может удалять клиентов")
+
+        stmt = select(Client).where(Client.id == UUID(client_id), Client.company_id == company_id)
         result = await self.db.execute(stmt)
         client = result.scalars().first()
 
@@ -114,3 +129,16 @@ class ClientService:
         await self.db.delete(client)
         await self.db.commit()
         return True
+
+    async def search_name(self, query: str, company_id: UUID) -> Sequence[tuple[UUID, str]]:
+        stmt = (
+            select(Client.id, Client.name)
+            .where(
+                Client.company_id == company_id,
+                or_(Client.name.istartswith(query), Client.short_name.istartswith(query)),
+            )
+            .limit(5)
+        )
+        result = await self.db.execute(stmt)
+        rows = result.all()
+        return [(row[0], row[1]) for row in rows]

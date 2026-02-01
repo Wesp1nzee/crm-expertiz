@@ -70,7 +70,7 @@ class MailRecipient(Base):
     message_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("mail_messages.id", ondelete="CASCADE"))
     email_address: Mapped[str] = mapped_column(String(255), index=True)
     recipient_type: Mapped[MailRecipientType] = mapped_column(SQLEnum(MailRecipientType, native_enum=False))
-    name: Mapped[str | None] = mapped_column(String(255))
+    name: Mapped[str | None] = mapped_column(Text)
 
     message: Mapped[MailMessage] = relationship("MailMessage", back_populates="recipients")
 
@@ -91,7 +91,7 @@ class MailMessage(Base):
 
     sender_email: Mapped[str] = mapped_column(String(255))
     sender_name: Mapped[str | None] = mapped_column(String(255))
-    subject: Mapped[str | None] = mapped_column(String(1000))
+    subject: Mapped[str | None] = mapped_column(Text)
 
     message_type: Mapped[MailMessageType] = mapped_column(SQLEnum(MailMessageType, native_enum=False))
     status: Mapped[MailMessageStatus] = mapped_column(SQLEnum(MailMessageStatus, native_enum=False), default=MailMessageStatus.DELIVERED)

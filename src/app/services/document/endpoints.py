@@ -4,10 +4,12 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.app.core.auth.deps import get_current_user
 from src.app.core.database.session import get_db
 from src.app.services.document.models import Folder
 from src.app.services.document.schemas import DocumentDownloadUrl, DocumentResponse, FileSystemEntry, FolderCreate, FolderResponse
 from src.app.services.document.service import DocumentService
+from src.app.services.user.models import User, UserRole
 
 router = APIRouter(prefix="/api/documents", tags=["Documents"])
 
@@ -30,9 +32,19 @@ async def list_assets(
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> list[FileSystemEntry]:
-    return await DocumentService(db).get_unified_list(
-        folder_id=folder_id, case_id=case_id, search=search, sort_by=sort_by, order=order, limit=limit, offset=offset
+    service = DocumentService(db)
+    return await service.get_unified_list(
+        folder_id=folder_id,
+        case_id=case_id,
+        search=search,
+        sort_by=sort_by,
+        order=order,
+        limit=limit,
+        offset=offset,
+        user_id=current_user.id,
+        user_role=current_user.role,
     )
 
 
@@ -45,9 +57,13 @@ async def list_assets(
 async def create_folder(
     folder_data: FolderCreate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> FolderResponse:
+    if current_user.role == UserRole.EXPERT:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="У вас нет прав для создания папок")
+
     service = DocumentService(db)
-    result = await service.create_folder(folder_data, user_id=None)
+    result = await service.create_folder(folder_data, current_user.id, current_user.role)
     return FolderResponse.model_validate(result)
 
 
@@ -63,9 +79,15 @@ async def upload_document(
     folder_id: uuid.UUID | None = Form(None),
     title: str | None = Form(None),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> DocumentResponse:
+    if current_user.role == UserRole.EXPERT:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="У вас нет прав для загрузки документов")
+
     service = DocumentService(db)
-    result = await service.upload_document(file=file, case_id=case_id, folder_id=folder_id, title=title, user_id=None)
+    result = await service.upload_document(
+        file=file, user_id=current_user.id, user_role=current_user.role, case_id=case_id, folder_id=folder_id, title=title
+    )
     return DocumentResponse.model_validate(result)
 
 
@@ -76,12 +98,13 @@ async def upload_document(
 async def get_document_url(
     document_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> DocumentDownloadUrl:
     service = DocumentService(db)
-    url = await service.get_presigned_url(document_id)
+    url = await service.get_presigned_url(document_id, current_user.id, current_user.role)
     if not url:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Документ не найден")
-    return DocumentDownloadUrl.model_validate(url)
+    return DocumentDownloadUrl(download_url=url)
 
 
 @router.delete(
@@ -92,9 +115,13 @@ async def get_document_url(
 async def delete_document(
     document_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> None:
+    if current_user.role == UserRole.EXPERT:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="У вас нет прав для удаления документов")
+
     service = DocumentService(db)
-    success = await service.delete_document(document_id)
+    success = await service.delete_document(document_id, current_user.id, current_user.role)
     if not success:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Документ не найден")
 
@@ -107,6 +134,10 @@ async def delete_document(
 async def delete_folder(
     folder_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> None:
+    if current_user.role == UserRole.EXPERT:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="У вас нет прав для удаления папок")
+
     await db.execute(delete(Folder).where(Folder.id == folder_id))
     await db.commit()

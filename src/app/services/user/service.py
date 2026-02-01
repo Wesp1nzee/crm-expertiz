@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 from typing import Any
+from uuid import UUID
 
 from fastapi import HTTPException, status
 from sqlalchemy import asc, desc, func, or_, select
@@ -147,3 +148,17 @@ class UserService:
         user.can_authenticate = can_auth
         await self.db.commit()
         return user
+
+    async def search_name(self, query: str, company_id: UUID) -> list[User]:
+        stmt = select(User.id, User.full_name).where(User.company_id == company_id, User.full_name.istartswith(query)).limit(5)
+
+        result = await self.db.execute(stmt)
+        rows = result.all()
+
+        user_ids = [row[0] for row in rows]
+        if not user_ids:
+            return []
+
+        users_stmt = select(User).where(User.id.in_(user_ids))
+        users_result = await self.db.execute(users_stmt)
+        return list(users_result.scalars().all())

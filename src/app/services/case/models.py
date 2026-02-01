@@ -37,9 +37,9 @@ class Case(Base):
     )  # Ссылка на клиента с каскадным удалением
     number: Mapped[str] = mapped_column(String(50), nullable=False, unique=True, index=True)  # Номер дела (уникальный)
     case_number: Mapped[str] = mapped_column(String(100), nullable=False, unique=True, index=True)  # Номер производства (уникальный)
-    authority: Mapped[str] = mapped_column(String(255), nullable=False)  # Орган власти/суд
-    case_type: Mapped[str] = mapped_column(String(100), nullable=False)  # Тип дела (административное, гражданское и т.д.)
-    object_type: Mapped[str] = mapped_column(String(100), nullable=False)  # Тип объекта (земля, недвижимость и т.д.)
+    authority: Mapped[str] = mapped_column(Text, nullable=False)  # Орган власти/суд
+    case_type: Mapped[str] = mapped_column(Text, nullable=False)  # Тип дела (административное, гражданское и т.д.)
+    object_type: Mapped[str] = mapped_column(Text, nullable=False)  # Тип объекта (земля, недвижимость и т.д.)
     object_address: Mapped[str] = mapped_column(Text, nullable=False)  # Адрес объекта
     status: Mapped[CaseStatus] = mapped_column(
         SQLEnum(CaseStatus, native_enum=False),
@@ -57,8 +57,8 @@ class Case(Base):
     bank_transfer_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), server_default="0.00", default=Decimal("0.00"))  # Перевод на счёт
     cash_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), server_default="0.00", default=Decimal("0.00"))  # Наличные
     remaining_debt: Mapped[Decimal] = mapped_column(Numeric(12, 2), server_default="0.00", default=Decimal("0.00"))  # Оставшийся долг
-    plaintiff: Mapped[str | None] = mapped_column(String(255))  # Истец
-    defendant: Mapped[str | None] = mapped_column(String(255))  # Ответчик
+    plaintiff: Mapped[str | None] = mapped_column(Text)  # Истец
+    defendant: Mapped[str | None] = mapped_column(Text)  # Ответчик
     expert_painting: Mapped[str | None] = mapped_column(Text)  # Экспертная оценка/обследование
     archive_status: Mapped[str | None] = mapped_column(Text)  # Мб потом будет ссылка
     remarks: Mapped[str | None] = mapped_column(Text)  # Примечания

@@ -1,6 +1,6 @@
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.auth.deps import get_current_user
@@ -8,16 +8,20 @@ from src.app.core.auth.session import SessionManager
 from src.app.core.database.session import get_db
 from src.app.core.redis import get_redis_client
 from src.app.services.user.models import User
-from src.app.services.user.schemas import (
-    LogoutResponse,
-    UserCreate,
-    UserFilterParams,
-    UserLoginSchema,
-    UserRead,
-)
+from src.app.services.user.schemas import LogoutResponse, SearchResultDTO, UserCreate, UserFilterParams, UserLoginSchema, UserRead
 from src.app.services.user.service import UserService
 
 router = APIRouter(prefix="/api/users", tags=["Users & Auth"])
+
+
+@router.get("/suggest", response_model=list[SearchResultDTO])
+async def suggest_users(
+    q: str = Query(..., min_length=2), db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)
+) -> list[SearchResultDTO]:
+    service = UserService(db)
+    results = await service.search_name(q, current_user.company_id)
+
+    return [SearchResultDTO(id=r.id, name=r.full_name) for r in results]
 
 
 @router.post("/login", response_model=UserRead)
