@@ -43,13 +43,22 @@ class S3Storage:
                 ContentType=content_type,
             )
 
-    async def get_download_url(self, object_key: str, original_filename: str | None = None, expires_in: int = 3600) -> str:
+    async def get_presigned_url(
+        self, object_key: str, original_filename: str | None = None, expires_in: int = 3600, download: bool = False
+    ) -> str:
         params = {"Bucket": settings.S3_BUCKET_NAME, "Key": object_key}
 
         if original_filename:
             safe_filename = re.sub(r"[^\w\-. ]", "_", original_filename)
-            content_disposition = f'attachment; filename="{safe_filename}"'
+            disposition_type = "attachment" if download else "inline"
+            content_disposition = f'{disposition_type}; filename="{safe_filename}"'
             params["ResponseContentDisposition"] = content_disposition
+
+            import mimetypes
+
+            content_type, _ = mimetypes.guess_type(original_filename)
+            if content_type:
+                params["ResponseContentType"] = content_type
 
         async with self.get_client() as client:
             url: str = await client.generate_presigned_url(

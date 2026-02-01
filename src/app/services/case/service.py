@@ -252,7 +252,7 @@ class CaseService:
         active_count_result = await self.db.execute(active_count_stmt)
         active_count = active_count_result.scalar() or 0
 
-        now = datetime.utcnow()
+        now = datetime.now()
         overdue_count_stmt = select(func.count(Case.id)).where(
             Case.id.in_(select(Case.id).where(Case.deleted_at.is_(None))), Case.status.notin_(inactive_statuses), Case.deadline < now
         )
@@ -284,8 +284,22 @@ class CaseService:
                 condition = condition_func(param_value)
                 stmt = stmt.where(condition)
 
-        if query_params.search and search_condition:
-            stmt = stmt.where(search_condition)
+        # Добавляем условие поиска в основной запрос
+        if query_params.search:
+            # Повторно создаем условие поиска для основного запроса
+            search_term = f"%{query_params.search}%"
+            case_search_condition = (
+                (Case.number.ilike(search_term))
+                | (Case.case_number.ilike(search_term))
+                | (Case.authority.ilike(search_term))
+                | (Case.object_address.ilike(search_term))
+                | (Case.plaintiff.ilike(search_term))
+                | (Case.defendant.ilike(search_term))
+                | (Case.remarks.ilike(search_term))
+            )
+            # Для основного запроса уже есть JOIN с Client
+            case_search_condition = case_search_condition | (Client.name.ilike(search_term))
+            stmt = stmt.where(case_search_condition)
 
         # Сортировка
         if query_params.sort_field and query_params.sort_order:

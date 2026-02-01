@@ -1,8 +1,9 @@
-import asyncio
 import os
 import uuid
+from datetime import datetime
+from typing import Any
 
-from fastapi import UploadFile
+from fastapi import HTTPException, UploadFile, status
 from sqlalchemy import asc, desc, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -37,8 +38,6 @@ class DocumentService:
         user_id: uuid.UUID | None = None,
         user_role: UserRole | None = None,
     ) -> list[FileSystemEntry]:
-        sort_func = desc if order == "desc" else asc
-
         folder_stmt = select(Folder).options(selectinload(Folder.creator))
         doc_stmt = select(Document).options(selectinload(Document.uploaded_by))
 
@@ -57,19 +56,23 @@ class DocumentService:
             folder_stmt = folder_stmt.join(Case, Folder.case_id == Case.id).where(Case.assigned_user_id == user_id)
             doc_stmt = doc_stmt.join(Case, Document.case_id == Case.id).where(Case.assigned_user_id == user_id)
 
+        sort_func = desc if order == "desc" else asc
+
         f_sort_col = getattr(Folder, sort_by if hasattr(Folder, sort_by) else "created_at")
         d_sort_col = getattr(Document, sort_by if hasattr(Document, sort_by) else "created_at")
 
         folder_stmt = folder_stmt.order_by(sort_func(f_sort_col))
         doc_stmt = doc_stmt.order_by(sort_func(d_sort_col))
 
-        f_res, d_res = await asyncio.gather(
-            self.db.execute(folder_stmt.limit(limit).offset(offset)), self.db.execute(doc_stmt.limit(limit).offset(offset))
-        )
+        folders_result = await self.db.execute(folder_stmt.limit(limit).offset(offset))
+        documents_result = await self.db.execute(doc_stmt.limit(limit).offset(offset))
+
+        folders = folders_result.scalars().all()
+        documents = documents_result.scalars().all()
 
         result: list[FileSystemEntry] = []
 
-        for folder in f_res.scalars().all():
+        for folder in folders:
             result.append(
                 FileSystemEntry(
                     id=folder.id,
@@ -82,7 +85,7 @@ class DocumentService:
                 )
             )
 
-        for document in d_res.scalars().all():
+        for document in documents:
             result.append(
                 FileSystemEntry(
                     id=document.id,
@@ -143,14 +146,18 @@ class DocumentService:
         await self.db.refresh(db_doc)
         return db_doc
 
-    async def get_presigned_url(self, doc_id: uuid.UUID) -> str | None:
+    async def get_presigned_url(
+        self,
+        doc_id: uuid.UUID,
+        download: bool = False,  # Новый параметр
+    ) -> str | None:
         res = await self.db.execute(select(Document).where(Document.id == doc_id))
         doc = res.scalar_one_or_none()
 
         if not doc:
             return None
 
-        return await s3_storage.get_download_url(doc.file_path, original_filename=doc.original_filename)
+        return await s3_storage.get_presigned_url(object_key=doc.file_path, original_filename=doc.original_filename, download=download)
 
     async def delete_document(self, doc_id: uuid.UUID) -> bool:
         res = await self.db.execute(select(Document).where(Document.id == doc_id))
@@ -162,3 +169,151 @@ class DocumentService:
         await self.db.delete(doc)
         await self.db.commit()
         return True
+
+    async def update_document(
+        self, document_id: uuid.UUID, update_data: dict[str, Any], user_id: uuid.UUID, user_role: UserRole
+    ) -> Document | None:
+        """
+        Обновляет документ с проверкой прав доступа
+        """
+        res = await self.db.execute(
+            select(Document).where(Document.id == document_id).options(selectinload(Document.folder), selectinload(Document.case))
+        )
+        doc = res.scalar_one_or_none()
+
+        if not doc:
+            return None
+
+        # Проверка доступа
+        if not await self._check_document_access(doc, user_id, user_role):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет прав для обновления этого документа")
+
+        # Обновление полей
+        if "title" in update_data and update_data["title"]:
+            doc.title = update_data["title"]
+
+        if "case_id" in update_data:
+            # Если case_id = None, удаляем привязку к делу
+            doc.case_id = update_data["case_id"]
+
+        if "folder_id" in update_data:
+            if update_data["folder_id"]:
+                folder_res = await self.db.execute(select(Folder).where(Folder.id == update_data["folder_id"]))
+                folder = folder_res.scalar_one_or_none()
+                if not folder:
+                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Целевая папка не найдена")
+
+            if update_data["folder_id"] and await self._is_descendant_folder(doc.id, update_data["folder_id"]):
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Нельзя переместить документ в дочернюю папку")
+
+            doc.folder_id = update_data["folder_id"]
+
+        doc.updated_at = datetime.now()
+
+        await self.db.commit()
+        await self.db.refresh(doc)
+        return doc
+
+    async def update_folder(self, folder_id: uuid.UUID, update_data: dict[str, Any], user_id: uuid.UUID, user_role: UserRole) -> Folder | None:
+        """
+        Обновляет папку с проверкой прав доступа и цикличности
+        """
+        res = await self.db.execute(
+            select(Folder).where(Folder.id == folder_id).options(selectinload(Folder.parent), selectinload(Folder.subfolders))
+        )
+        folder = res.scalar_one_or_none()
+
+        if not folder:
+            return None
+
+        # Проверка доступа
+        if not await self._check_folder_access(folder, user_id, user_role):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет прав для обновления этой папки")
+
+        # Обновление имени
+        if "name" in update_data and update_data["name"]:
+            folder.name = update_data["name"]
+
+        # Обновление case_id
+        if "case_id" in update_data:
+            folder.case_id = update_data["case_id"]
+
+        # Обновление parent_id (перемещение папки)
+        if "parent_id" in update_data:
+            new_parent_id = update_data["parent_id"]
+
+            if new_parent_id == folder_id:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Нельзя переместить папку в саму себя")
+
+            if new_parent_id and await self._is_descendant_folder(new_parent_id, folder_id):
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Нельзя переместить папку в дочернюю папку")
+
+            if new_parent_id:
+                parent_res = await self.db.execute(select(Folder).where(Folder.id == new_parent_id))
+                parent = parent_res.scalar_one_or_none()
+                if not parent:
+                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Родительская папка не найдена")
+
+            folder.parent_id = new_parent_id
+
+        folder.updated_at = datetime.now()
+
+        await self.db.commit()
+        await self.db.refresh(folder)
+        return folder
+
+    async def _is_descendant_folder(self, potential_parent_id: uuid.UUID, folder_id: uuid.UUID) -> bool:
+        """
+        Проверяет, является ли папка с folder_id дочерней (или вложенной) для potential_parent_id
+        """
+        # Исправление: потенциальный родитель не может быть самим собой
+        # Этот случай должен обрабатываться в вызывающем коде
+        # Удаляем эту проверку:
+        # if potential_parent_id == folder_id:
+        #     return True
+
+        current_id = folder_id
+        visited = set()
+
+        while current_id:
+            if current_id in visited:
+                break
+
+            visited.add(current_id)
+
+            res = await self.db.execute(select(Folder.parent_id).where(Folder.id == current_id))
+            parent = res.scalar_one_or_none()
+
+            if not parent:
+                break
+
+            if parent == potential_parent_id:
+                return True
+
+            current_id = parent
+
+        return False
+
+    async def _check_document_access(self, document: Document, user_id: uuid.UUID, user_role: UserRole) -> bool:
+        """
+        Проверяет права доступа к документу
+        """
+        if user_role in [UserRole.ADMIN, UserRole.CEO, UserRole.ACCOUNTANT]:
+            return True
+
+        if document.uploaded_by_id == user_id:
+            return True
+
+        return False
+
+    async def _check_folder_access(self, folder: Folder, user_id: uuid.UUID, user_role: UserRole) -> bool:
+        """
+        Проверяет права доступа к папке
+        """
+        if user_role in [UserRole.ADMIN, UserRole.CEO, UserRole.ACCOUNTANT]:
+            return True
+
+        if folder.created_by_id == user_id:
+            return True
+
+        return False

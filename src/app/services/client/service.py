@@ -2,10 +2,11 @@ from collections.abc import Sequence
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import joinedload, selectinload
 
+from src.app.services.case.models import Case
 from src.app.services.client.models import Client, Contact
 from src.app.services.client.schemas import (
     ClientCreate,
@@ -61,9 +62,24 @@ class ClientService:
 
         return ClientFullResponse.model_validate(client)
 
-    async def get_clients(self, filters: ClientFilters, company_id: UUID, user_role: UserRole) -> ClientListResponse:
+    async def get_clients(self, filters: ClientFilters, company_id: UUID) -> ClientListResponse:
         """Получает список клиентов с фильтрацией и пагинацией (только для своей компании)"""
-        stmt = select(Client).where(Client.company_id == company_id)
+
+        case_counts_subq = (
+            select(
+                Case.client_id,
+                func.count(Case.id).label("total_cases"),
+                func.sum(case((Case.status == "in_work", 1), else_=0)).label("active_cases"),
+            )
+            .group_by(Case.client_id)
+            .subquery()
+        )
+
+        stmt = (
+            select(Client, case_counts_subq.c.total_cases, case_counts_subq.c.active_cases)
+            .outerjoin(case_counts_subq, Client.id == case_counts_subq.c.client_id)
+            .where(Client.company_id == company_id)
+        )
 
         if filters.type:
             stmt = stmt.where(Client.type == filters.type)
@@ -75,21 +91,29 @@ class ClientService:
             )
             stmt = stmt.where(search_filter)
 
-        count_stmt = select(func.count()).select_from(stmt.subquery())
+        count_stmt = select(func.count()).select_from(stmt.options(joinedload("*")).subquery())
         total_count = (await self.db.execute(count_stmt)).scalar() or 0
 
         offset = (filters.page - 1) * filters.limit
         stmt = stmt.order_by(Client.created_at.desc()).offset(offset).limit(filters.limit)
 
         result = await self.db.execute(stmt)
-        clients = result.scalars().all()
+        rows = result.all()
+
+        clients_with_counts = []
+        for row in rows:
+            client_data = row.Client
+            client_data.active_cases = row.active_cases or 0
+            client_data.total_cases = row.total_cases or 0
+            clients_with_counts.append(ClientShortResponse.model_validate(client_data))
 
         total_pages = max(1, (total_count + filters.limit - 1) // filters.limit)
+
         return ClientListResponse(
-            items=[ClientShortResponse.model_validate(c) for c in clients],
+            items=clients_with_counts,
             total=total_count,
             page=filters.page,
-            size=len(clients),
+            size=len(clients_with_counts),
             pages=total_pages,
         )
 

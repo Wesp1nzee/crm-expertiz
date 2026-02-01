@@ -7,7 +7,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.app.core.auth.deps import get_current_user
 from src.app.core.database.session import get_db
 from src.app.services.document.models import Folder
-from src.app.services.document.schemas import DocumentDownloadUrl, DocumentResponse, FileSystemEntry, FolderCreate, FolderResponse
+from src.app.services.document.schemas import (
+    AssetUpdate,
+    DocumentDownloadUrl,
+    DocumentResponse,
+    DocumentUpdate,
+    EntryType,
+    FileSystemEntry,
+    FolderCreate,
+    FolderResponse,
+    FolderUpdate,
+)
 from src.app.services.document.service import DocumentService
 from src.app.services.user.models import User
 
@@ -83,17 +93,18 @@ async def upload_document(
     return DocumentResponse.model_validate(result)
 
 
-@router.get(
-    "/{document_id}/url",
-    summary="Получить ссылку на скачивание",
-)
+@router.get("/{document_id}/url", summary="Получить ссылку на документ", response_description="Ссылка для просмотра или скачивания документа")
 async def get_document_url(
     document_id: uuid.UUID,
+    download: bool = Query(default=False, description="Режим скачивания. Если True - файл скачивается, если False - открывается в браузере"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> DocumentDownloadUrl:
+    """
+    Получить временную ссылку для доступа к документу.
+    """
     service = DocumentService(db)
-    url = await service.get_presigned_url(document_id)
+    url = await service.get_presigned_url(document_id, download=download)
     if not url:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Документ не найден")
     return DocumentDownloadUrl(download_url=url)
@@ -127,3 +138,47 @@ async def delete_folder(
 ) -> None:
     await db.execute(delete(Folder).where(Folder.id == folder_id))
     await db.commit()
+
+
+@router.patch(
+    "/update",
+    summary="Обновить файл или папку",
+    description="Единый эндпоинт для обновления документов и папок. Можно изменить имя, переместить в другую папку или изменить привязку к делу.",
+)
+async def update_asset(
+    asset_data: AssetUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> DocumentResponse | FolderResponse:
+    service = DocumentService(db)
+
+    if asset_data.asset_type == EntryType.FILE:
+        if not isinstance(asset_data.data, DocumentUpdate):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Для файлов данные должны быть типа DocumentUpdate")
+
+        update_dict = asset_data.data.model_dump(exclude_unset=True)
+        document = await service.update_document(
+            document_id=asset_data.asset_id, update_data=update_dict, user_id=current_user.id, user_role=current_user.role
+        )
+
+        if not document:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Документ не найден")
+
+        return DocumentResponse.model_validate(document)
+
+    else:  # EntryType.FOLDER
+        if not isinstance(asset_data.data, FolderUpdate):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Для папок данные должны быть типа FolderUpdate")
+
+        update_dict = asset_data.data.model_dump(exclude_unset=True)
+        folder = await service.update_folder(
+            folder_id=asset_data.asset_id, update_data=update_dict, user_id=current_user.id, user_role=current_user.role
+        )
+
+        if not folder:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Папка не найдена",
+            )
+
+        return FolderResponse.model_validate(folder)

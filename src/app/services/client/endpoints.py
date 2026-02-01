@@ -70,8 +70,9 @@ async def get_clients(
     service = ClientService(db)
     filters = ClientFilters(type=type, search=search, page=page, limit=limit)
     try:
-        return await service.get_clients(filters, current_user.company_id, current_user.role)
+        return await service.get_clients(filters, current_user.company_id)
     except Exception as err:
+        print(err)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Не удалось получить список клиентов",

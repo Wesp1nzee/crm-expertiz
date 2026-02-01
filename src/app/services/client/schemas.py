@@ -89,6 +89,8 @@ class ClientShortResponse(ClientBase):
 
     id: UUID
     created_at: datetime
+    active_cases: int = 0  # Количество активных дел
+    total_cases: int = 0  # Общее количество дел
 
     model_config = ConfigDict(from_attributes=True)
 
