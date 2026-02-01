@@ -1,5 +1,5 @@
 import logging
-import uuid
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.exc import IntegrityError
@@ -53,7 +53,6 @@ async def get_cases(
 async def create_case(
     case_data: CaseCreateRequest, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)
 ) -> CaseResponse:
-    # Проверяем права доступа
     if current_user.role == UserRole.EXPERT:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="У вас нет прав для создания дел")
 
@@ -79,18 +78,24 @@ async def create_case(
     "/{case_id}",
     response_model=CaseDetailsResponse,
     summary="Детальная информация о деле",
-    description="Возвращает полные данные дела, включая связи и историю",
+    description="Возвращает полные данные дела, включая клиента, документы, события и назначенных экспертов.",
 )
 async def get_case_details(
-    case_id: uuid.UUID, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)
+    case_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> CaseDetailsResponse:
     service = CaseService(db)
-    case_response = await service.get_case_by_id(str(case_id), current_user.id, current_user.role)
+    case_details = await service.get_case_details(
+        case_id=str(case_id),
+        user_id=current_user.id,
+        user_role=current_user.role,
+    )
 
-    if not case_response:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Дело не найдено")
+    if case_details is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Дело не найдено или нет доступа")
 
-    return CaseDetailsResponse(case=case_response, assigned_experts=[], documents=[], events=[], history=[])
+    return case_details
 
 
 @router.patch(
@@ -100,11 +105,8 @@ async def get_case_details(
     description="Частичное обновление информации по существующему делу",
 )
 async def update_case(
-    case_id: uuid.UUID, case_data: CaseUpdateRequest, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)
+    case_id: UUID, case_data: CaseUpdateRequest, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)
 ) -> CaseResponse:
-    if current_user.role == UserRole.EXPERT:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="У вас нет прав для обновления данных дела")
-
     service = CaseService(db)
     try:
         result = await service.update_case(str(case_id), case_data, current_user.id, current_user.role)
@@ -127,7 +129,7 @@ async def update_case(
     summary="Удалить дело",
     description="Выполняет мягкое удаление дела (пометка deleted_at)",
 )
-async def delete_case(case_id: uuid.UUID, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)) -> None:
+async def delete_case(case_id: UUID, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)) -> None:
     if current_user.role == UserRole.EXPERT:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="У вас нет прав для удаления дела")
 

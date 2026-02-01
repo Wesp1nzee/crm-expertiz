@@ -150,7 +150,14 @@ class UserService:
         return user
 
     async def search_name(self, query: str, company_id: UUID) -> list[User]:
-        stmt = select(User.id, User.full_name).where(User.company_id == company_id, User.full_name.istartswith(query)).limit(5)
+        stmt = (
+            select(User.id, User.full_name)
+            .where(
+                User.company_id == company_id,
+                or_(func.lower(User.full_name).startswith(func.lower(query)), func.lower(User.full_name).contains(func.lower(query))),
+            )
+            .limit(5)
+        )
 
         result = await self.db.execute(stmt)
         rows = result.all()

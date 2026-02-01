@@ -9,7 +9,7 @@ from src.app.core.database.session import get_db
 from src.app.services.document.models import Folder
 from src.app.services.document.schemas import DocumentDownloadUrl, DocumentResponse, FileSystemEntry, FolderCreate, FolderResponse
 from src.app.services.document.service import DocumentService
-from src.app.services.user.models import User, UserRole
+from src.app.services.user.models import User
 
 router = APIRouter(prefix="/api/documents", tags=["Documents"])
 
@@ -59,9 +59,6 @@ async def create_folder(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> FolderResponse:
-    if current_user.role == UserRole.EXPERT:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="У вас нет прав для создания папок")
-
     service = DocumentService(db)
     result = await service.create_folder(folder_data, current_user.id, current_user.role)
     return FolderResponse.model_validate(result)
@@ -81,9 +78,6 @@ async def upload_document(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> DocumentResponse:
-    if current_user.role == UserRole.EXPERT:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="У вас нет прав для загрузки документов")
-
     service = DocumentService(db)
     result = await service.upload_document(
         file=file, user_id=current_user.id, user_role=current_user.role, case_id=case_id, folder_id=folder_id, title=title
@@ -117,9 +111,6 @@ async def delete_document(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> None:
-    if current_user.role == UserRole.EXPERT:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="У вас нет прав для удаления документов")
-
     service = DocumentService(db)
     success = await service.delete_document(document_id, current_user.id, current_user.role)
     if not success:
@@ -136,8 +127,5 @@ async def delete_folder(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> None:
-    if current_user.role == UserRole.EXPERT:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="У вас нет прав для удаления папок")
-
     await db.execute(delete(Folder).where(Folder.id == folder_id))
     await db.commit()

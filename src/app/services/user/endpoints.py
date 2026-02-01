@@ -20,7 +20,6 @@ async def suggest_users(
 ) -> list[SearchResultDTO]:
     service = UserService(db)
     results = await service.search_name(q, current_user.company_id)
-
     return [SearchResultDTO(id=r.id, name=r.full_name) for r in results]
 
 
