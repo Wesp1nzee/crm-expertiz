@@ -3,7 +3,10 @@ import logging
 import uuid
 import zipfile
 from collections.abc import AsyncGenerator
+from datetime import datetime
+from decimal import Decimal
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
@@ -13,16 +16,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.auth.deps import get_current_user
 from src.app.core.database.session import get_db
-
-# Также нужно импортировать s3_storage в этот файл
 from src.app.core.storage.s3 import s3_storage
-from src.app.services.case.models import Case
+from src.app.services.case.models import Case, CaseStatus
 from src.app.services.case.schemas import (
     CaseCreateRequest,
     CaseDetailsResponse,
     CaseResponse,
     CaseSuggestionResponse,
     CaseUpdateRequest,
+    FinancialSummaryResponse,
     GetCasesQuery,
     GetCasesResponse,
 )
@@ -34,6 +36,62 @@ from src.app.services.user.models import User, UserRole
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/cases", tags=["Cases"])
+
+
+@router.get(
+    "/financial-summary",
+    response_model=FinancialSummaryResponse,
+    summary="Финансовая сводка",
+    description="Возвращает финансовую статистику по делам",
+)
+async def get_financial_summary(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> FinancialSummaryResponse:
+    """
+    Возвращает финансовую сводку по делам текущего пользователя или всех дел в зависимости от роли.
+    """
+    cases_query = select(Case).where(Case.deleted_at.is_(None))
+
+    if current_user.role == UserRole.EXPERT:
+        cases_query = cases_query.where(Case.assigned_user_id == current_user.id)
+
+    cases_result = await db.execute(cases_query)
+    all_cases = cases_result.scalars().all()
+
+    completed_cases = [case for case in all_cases if case.status != CaseStatus.in_work]
+    total_revenue = sum(Decimal(str(case.cost)) for case in completed_cases) if completed_cases else Decimal("0.00")
+
+    active_cases = [case for case in all_cases if case.status == CaseStatus.in_work]
+
+    now = datetime.now(ZoneInfo("UTC"))
+    overdue_cases = []
+    for case in active_cases:
+        deadline = case.deadline
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=ZoneInfo("UTC"))
+        if deadline < now:
+            overdue_cases.append(case)
+
+    average_case_cost = Decimal("0.00")
+
+    if len(completed_cases) > 0:
+        average_case_cost = total_revenue / Decimal(len(completed_cases)) if total_revenue > 0 else Decimal("0.00")
+
+    pending_cases = [case for case in all_cases if case.remaining_debt > 0]
+    pending_payments = len(pending_cases)
+    pending_amount = sum(Decimal(str(case.remaining_debt)) for case in pending_cases) if pending_cases else Decimal("0.00")
+
+    return FinancialSummaryResponse(
+        total_revenue=total_revenue,
+        pending_payments=pending_payments,
+        pending_amount=pending_amount,
+        average_case_cost=average_case_cost,
+        total_cases=len(all_cases),
+        completed_cases=len(completed_cases),
+        active_cases=len(active_cases),
+        overdue_cases=len(overdue_cases),
+    )
 
 
 @router.get("/{case_id}/download-documents", summary="Скачать все документы по делу как ZIP-архив")
@@ -50,10 +108,6 @@ async def download_case_documents_as_zip(
     if not case:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Дело не найдено")
 
-    if current_user.role != UserRole.ADMIN and current_user.role != UserRole.CEO and current_user.role != UserRole.ACCOUNTANT:
-        if case.assigned_user_id != current_user.id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет прав для доступа к этому делу")
-
     service = DocumentService(db)
 
     async def generate_zip() -> AsyncGenerator[bytes]:
@@ -68,7 +122,8 @@ async def download_case_documents_as_zip(
                 if await service._check_document_access(doc, current_user.id, current_user.role):
                     file_content = await s3_storage.get_file_content(doc.file_path)
 
-                    zip_path = doc.title
+                    safe_doc_title = doc.title.replace('"', "").replace("'", "").replace(";", "").replace(",", "")
+                    zip_path = safe_doc_title
                     zip_file.writestr(zip_path, file_content)
 
         buffer.seek(0)
@@ -78,9 +133,12 @@ async def download_case_documents_as_zip(
                 break
             yield chunk
 
-    filename = f"case_{case.number}_documents.zip"
+    safe_case_number = case.number.replace('"', "").replace("'", "").replace(";", "").replace(",", "")
+    filename = f"case_{safe_case_number}_documents.zip"
     return StreamingResponse(
-        generate_zip(), media_type="application/zip", headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"}
+        generate_zip(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename=\"{filename}\"; filename*=UTF-8''{safe_case_number}_documents.zip"},
     )
 
 

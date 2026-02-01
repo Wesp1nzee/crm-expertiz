@@ -1,4 +1,5 @@
 import io
+import urllib.parse
 import uuid
 import zipfile
 from collections.abc import AsyncGenerator
@@ -125,7 +126,12 @@ async def download_folder_as_zip(
     """
     service = DocumentService(db)
 
-    # Создаем потоковый ответ для ZIP-архива
+    # Проверяем наличие папки до создания архива
+    folder_result = await db.execute(select(Folder).where(Folder.id == folder_id))
+    folder = folder_result.scalar_one_or_none()
+    if not folder:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Папка не найдена")
+
     async def generate_zip() -> AsyncGenerator[bytes]:
         buffer = io.BytesIO()
 
@@ -140,15 +146,13 @@ async def download_folder_as_zip(
                 break
             yield chunk
 
-    # Получаем название папки для имени файла
-    folder_result = await db.execute(select(Folder).where(Folder.id == folder_id))
-    folder = folder_result.scalar_one_or_none()
-    if not folder:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Папка не найдена")
+    # Очищаем имя файла от потенциально опасных символов
+    safe_folder_name = folder.name.replace('"', "").replace("'", "").replace(";", "").replace(",", "")
 
-    filename = f"{folder.name}.zip"
+    encoded_filename = urllib.parse.quote(safe_folder_name, safe="")
+
     return StreamingResponse(
-        generate_zip(), media_type="application/zip", headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"}
+        generate_zip(), media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{encoded_filename}.zip"'}
     )
 
 
@@ -194,7 +198,7 @@ async def update_asset(
 ) -> DocumentResponse | FolderResponse:
     service = DocumentService(db)
 
-    print(f"Asset data: {asset_data}")
+    print(f"Asset  {asset_data}")
 
     if asset_data.asset_type == EntryType.FILE:
         if not isinstance(asset_data.data, DocumentUpdate):

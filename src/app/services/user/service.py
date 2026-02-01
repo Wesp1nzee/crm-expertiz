@@ -64,6 +64,7 @@ class UserService:
             specialization=user_in.specialization,
             settings=user_in.settings or {},
             company_id=creator.company_id,
+            is_active=True,
         )
 
         self.db.add(new_user)

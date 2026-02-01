@@ -6,6 +6,17 @@ from enum import Enum
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class FinancialSummaryResponse(BaseModel):
+    total_revenue: Decimal
+    pending_payments: int
+    pending_amount: Decimal
+    average_case_cost: Decimal
+    total_cases: int
+    completed_cases: int
+    active_cases: int
+    overdue_cases: int
+
+
 class CaseStatus(str, Enum):
     archive = "archive"
     in_work = "in_work"
