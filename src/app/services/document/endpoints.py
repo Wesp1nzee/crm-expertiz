@@ -1,7 +1,11 @@
+import io
 import uuid
+import zipfile
+from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
-from sqlalchemy import delete
+from fastapi.responses import StreamingResponse
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.auth.deps import get_current_user
@@ -110,6 +114,44 @@ async def get_document_url(
     return DocumentDownloadUrl(download_url=url)
 
 
+@router.get("/folders/{folder_id}/download", summary="Скачать папку как ZIP-архив")
+async def download_folder_as_zip(
+    folder_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> StreamingResponse:
+    """
+    Скачивание всей папки как ZIP-архива.
+    """
+    service = DocumentService(db)
+
+    # Создаем потоковый ответ для ZIP-архива
+    async def generate_zip() -> AsyncGenerator[bytes]:
+        buffer = io.BytesIO()
+
+        # Создаем ZIP-архив в памяти
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+            await service.add_folder_to_zip(zip_file, folder_id, "", current_user.id, current_user.role)
+
+        buffer.seek(0)
+        while True:
+            chunk = buffer.read(8192)
+            if not chunk:
+                break
+            yield chunk
+
+    # Получаем название папки для имени файла
+    folder_result = await db.execute(select(Folder).where(Folder.id == folder_id))
+    folder = folder_result.scalar_one_or_none()
+    if not folder:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Папка не найдена")
+
+    filename = f"{folder.name}.zip"
+    return StreamingResponse(
+        generate_zip(), media_type="application/zip", headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"}
+    )
+
+
 @router.delete(
     "/{document_id}",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -151,6 +193,8 @@ async def update_asset(
     current_user: User = Depends(get_current_user),
 ) -> DocumentResponse | FolderResponse:
     service = DocumentService(db)
+
+    print(f"Asset data: {asset_data}")
 
     if asset_data.asset_type == EntryType.FILE:
         if not isinstance(asset_data.data, DocumentUpdate):

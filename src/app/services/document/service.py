@@ -1,5 +1,7 @@
+# src/app/services/document/service.py
 import os
 import uuid
+import zipfile
 from datetime import datetime
 from typing import Any
 
@@ -149,7 +151,7 @@ class DocumentService:
     async def get_presigned_url(
         self,
         doc_id: uuid.UUID,
-        download: bool = False,  # Новый параметр
+        download: bool = False,
     ) -> str | None:
         res = await self.db.execute(select(Document).where(Document.id == doc_id))
         doc = res.scalar_one_or_none()
@@ -169,6 +171,44 @@ class DocumentService:
         await self.db.delete(doc)
         await self.db.commit()
         return True
+
+    async def add_folder_to_zip(
+        self, zip_file: zipfile.ZipFile, folder_id: uuid.UUID, path_prefix: str, user_id: uuid.UUID, user_role: UserRole
+    ) -> None:
+        """
+        Рекурсивно добавляет содержимое папки в ZIP-архив
+        """
+        # Получаем все папки и документы в текущей папке
+        folders_query = select(Folder).where(Folder.parent_id == folder_id)
+        documents_query = select(Document).where(Document.folder_id == folder_id)
+
+        folders_result = await self.db.execute(folders_query)
+        documents_result = await self.db.execute(documents_query)
+
+        folders = folders_result.scalars().all()
+        documents = documents_result.scalars().all()
+
+        # Добавляем документы в ZIP
+        for doc in documents:
+            # Проверяем права доступа к документу
+            if await self._check_document_access(doc, user_id, user_role):
+                # Получаем содержимое документа из S3
+                file_content = await s3_storage.get_file_content(doc.file_path)
+
+                # Формируем путь внутри ZIP-архива
+                zip_path = f"{path_prefix}{doc.title}" if path_prefix else doc.title
+                zip_file.writestr(zip_path, file_content)
+
+        # Рекурсивно добавляем подпапки
+        for folder in folders:
+            # Проверяем права доступа к папке
+            if await self._check_folder_access(folder, user_id, user_role):
+                subfolder_path = f"{path_prefix}{folder.name}/" if path_prefix else f"{folder.name}/"
+
+                zip_file.writestr(subfolder_path, "")
+
+                # Рекурсивно добавляем содержимое подпапки
+                await self.add_folder_to_zip(zip_file, folder.id, subfolder_path, user_id, user_role)
 
     async def update_document(
         self, document_id: uuid.UUID, update_data: dict[str, Any], user_id: uuid.UUID, user_role: UserRole
@@ -266,11 +306,6 @@ class DocumentService:
         """
         Проверяет, является ли папка с folder_id дочерней (или вложенной) для potential_parent_id
         """
-        # Исправление: потенциальный родитель не может быть самим собой
-        # Этот случай должен обрабатываться в вызывающем коде
-        # Удаляем эту проверку:
-        # if potential_parent_id == folder_id:
-        #     return True
 
         current_id = folder_id
         visited = set()

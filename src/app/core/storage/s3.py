@@ -68,6 +68,14 @@ class S3Storage:
             )
             return url
 
+    async def get_file_content(self, object_key: str) -> bytes:
+        """Получает содержимое файла из S3"""
+        async with self.get_client() as client:
+            response = await client.get_object(Bucket=settings.S3_BUCKET_NAME, Key=object_key)
+            body = response["Body"]
+            content: bytes = await body.read()
+            return content
+
     async def delete_file(self, object_key: str) -> None:
         async with self.get_client() as client:
             await client.delete_object(Bucket=settings.S3_BUCKET_NAME, Key=object_key)

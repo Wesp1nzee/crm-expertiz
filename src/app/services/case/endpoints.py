@@ -1,12 +1,22 @@
+import io
 import logging
+import uuid
+import zipfile
+from collections.abc import AsyncGenerator
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.auth.deps import get_current_user
-from src.app.core.database import get_db
+from src.app.core.database.session import get_db
+
+# Также нужно импортировать s3_storage в этот файл
+from src.app.core.storage.s3 import s3_storage
+from src.app.services.case.models import Case
 from src.app.services.case.schemas import (
     CaseCreateRequest,
     CaseDetailsResponse,
@@ -17,11 +27,61 @@ from src.app.services.case.schemas import (
     GetCasesResponse,
 )
 from src.app.services.case.service import CaseService
+from src.app.services.document.models import Document
+from src.app.services.document.service import DocumentService
 from src.app.services.user.models import User, UserRole
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/cases", tags=["Cases"])
+
+
+@router.get("/{case_id}/download-documents", summary="Скачать все документы по делу как ZIP-архив")
+async def download_case_documents_as_zip(
+    case_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> StreamingResponse:
+    """
+    Скачивание всех документов, связанных с делом, как ZIP-архива.
+    """
+    case_result = await db.execute(select(Case).where(Case.id == case_id))
+    case = case_result.scalar_one_or_none()
+    if not case:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Дело не найдено")
+
+    if current_user.role != UserRole.ADMIN and current_user.role != UserRole.CEO and current_user.role != UserRole.ACCOUNTANT:
+        if case.assigned_user_id != current_user.id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет прав для доступа к этому делу")
+
+    service = DocumentService(db)
+
+    async def generate_zip() -> AsyncGenerator[bytes]:
+        buffer = io.BytesIO()
+
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+            documents_query = select(Document).where(Document.case_id == case_id)
+            documents_result = await db.execute(documents_query)
+            documents = documents_result.scalars().all()
+
+            for doc in documents:
+                if await service._check_document_access(doc, current_user.id, current_user.role):
+                    file_content = await s3_storage.get_file_content(doc.file_path)
+
+                    zip_path = doc.title
+                    zip_file.writestr(zip_path, file_content)
+
+        buffer.seek(0)
+        while True:
+            chunk = buffer.read(8192)
+            if not chunk:
+                break
+            yield chunk
+
+    filename = f"case_{case.number}_documents.zip"
+    return StreamingResponse(
+        generate_zip(), media_type="application/zip", headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"}
+    )
 
 
 @router.get(
