@@ -71,4 +71,8 @@ class Case(Base):
     documents: Mapped[list[Document]] = relationship("Document", back_populates="case", cascade="all, delete-orphan")
     mail_messages: Mapped[list[MailMessage]] = relationship("MailMessage", back_populates="case")
 
-    __table_args__ = (Index("ix_cases_client_status", "client_id", "status"),)  # Индекс для фильтрации по клиенту и статусу
+    __table_args__ = (
+        Index("ix_cases_client_status", "client_id", "status"),
+        Index("ix_cases_number_btree", "number"),
+        Index("ix_cases_case_number_btree", "case_number"),
+    )

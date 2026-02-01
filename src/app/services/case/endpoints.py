@@ -1,7 +1,7 @@
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,6 +11,7 @@ from src.app.services.case.schemas import (
     CaseCreateRequest,
     CaseDetailsResponse,
     CaseResponse,
+    CaseSuggestionResponse,
     CaseUpdateRequest,
     GetCasesQuery,
     GetCasesResponse,
@@ -21,6 +22,28 @@ from src.app.services.user.models import User, UserRole
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/cases", tags=["Cases"])
+
+
+@router.get(
+    "/suggest",
+    response_model=list[CaseSuggestionResponse],
+    summary="Подсказки по делам",
+    description="Возвращает подсказки по делам по поисковому запросу в полях number или case_number",
+)
+async def suggest_case(
+    q: str = Query(..., min_length=1, description="Поисковый запрос (минимум 1 символ)"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[CaseSuggestionResponse]:
+    service = CaseService(db)
+    try:
+        return await service.suggest_cases(q, current_user.id, current_user.role)
+    except Exception as err:
+        logger.exception("Error during case suggestion search")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Ошибка при поиске дел",
+        ) from err
 
 
 @router.get(

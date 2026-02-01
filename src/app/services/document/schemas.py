@@ -22,6 +22,7 @@ class FolderCreate(FolderBase):
 class FolderResponse(FolderBase):
     id: uuid.UUID
     created_by_id: uuid.UUID | None
+    creator_name: str | None = None  # ← Добавили имя создателя
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
@@ -34,6 +35,7 @@ class DocumentResponse(BaseModel):
     file_size: int
     file_extension: str
     uploaded_by_id: uuid.UUID | None
+    uploaded_by_name: str | None = None  # ← Добавили имя загрузившего
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
@@ -46,6 +48,7 @@ class FileSystemEntry(BaseModel):
     extension: str | None = None
     created_at: datetime
     created_by_id: uuid.UUID | None
+    created_by_name: str | None = None
     parent_id: uuid.UUID | None
 
 

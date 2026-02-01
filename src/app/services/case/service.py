@@ -17,6 +17,7 @@ from src.app.services.case.schemas import (
     CaseDetailsResponse,
     CaseResponse,
     CasesSummary,
+    CaseSuggestionResponse,
     CaseUpdateRequest,
     ClientResponse,
     DocumentResponse,
@@ -329,3 +330,41 @@ class CaseService:
                 completed=completed_count,
             ),
         )
+
+    async def suggest_cases(self, query: str, user_id: UUID, user_role: UserRole) -> list[CaseSuggestionResponse]:
+        """
+        Возвращает подсказки по делам, основываясь на поисковом запросе.
+        Эксперты видят только свои дела.
+        """
+        search_pattern = f"%{query}%"
+
+        stmt = (
+            select(
+                Case.id,
+                Case.number,
+                Case.case_number,
+            )
+            .where(
+                Case.deleted_at.is_(None),
+                (Case.number.ilike(search_pattern)) | (Case.case_number.ilike(search_pattern)),
+            )
+            .order_by(Case.updated_at.desc())
+            .limit(5)
+        )
+
+        if user_role == UserRole.EXPERT:
+            stmt = stmt.where(Case.assigned_user_id == user_id)
+
+        result = await self.db.execute(stmt)
+        rows = result.all()
+
+        suggestions = []
+        for row in rows:
+            suggestion = CaseSuggestionResponse(
+                id=row.id,
+                number=row.number,
+                case_number=row.case_number,
+            )
+            suggestions.append(suggestion)
+
+        return suggestions

@@ -79,9 +79,7 @@ async def upload_document(
     current_user: User = Depends(get_current_user),
 ) -> DocumentResponse:
     service = DocumentService(db)
-    result = await service.upload_document(
-        file=file, user_id=current_user.id, user_role=current_user.role, case_id=case_id, folder_id=folder_id, title=title
-    )
+    result = await service.upload_document(file=file, user_id=current_user.id, case_id=case_id, folder_id=folder_id, title=title)
     return DocumentResponse.model_validate(result)
 
 
@@ -95,7 +93,7 @@ async def get_document_url(
     current_user: User = Depends(get_current_user),
 ) -> DocumentDownloadUrl:
     service = DocumentService(db)
-    url = await service.get_presigned_url(document_id, current_user.id, current_user.role)
+    url = await service.get_presigned_url(document_id)
     if not url:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Документ не найден")
     return DocumentDownloadUrl(download_url=url)
@@ -112,7 +110,7 @@ async def delete_document(
     current_user: User = Depends(get_current_user),
 ) -> None:
     service = DocumentService(db)
-    success = await service.delete_document(document_id, current_user.id, current_user.role)
+    success = await service.delete_document(document_id)
     if not success:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Документ не найден")
 

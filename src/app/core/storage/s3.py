@@ -1,3 +1,4 @@
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -42,11 +43,18 @@ class S3Storage:
                 ContentType=content_type,
             )
 
-    async def get_download_url(self, object_key: str, expires_in: int = 3600) -> str:
+    async def get_download_url(self, object_key: str, original_filename: str | None = None, expires_in: int = 3600) -> str:
+        params = {"Bucket": settings.S3_BUCKET_NAME, "Key": object_key}
+
+        if original_filename:
+            safe_filename = re.sub(r"[^\w\-. ]", "_", original_filename)
+            content_disposition = f'attachment; filename="{safe_filename}"'
+            params["ResponseContentDisposition"] = content_disposition
+
         async with self.get_client() as client:
             url: str = await client.generate_presigned_url(
                 "get_object",
-                Params={"Bucket": settings.S3_BUCKET_NAME, "Key": object_key},
+                Params=params,
                 ExpiresIn=expires_in,
             )
             return url
