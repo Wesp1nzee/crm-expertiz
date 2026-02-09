@@ -55,9 +55,11 @@ class UserRead(UserBase):
 
 class UserUpdate(BaseModel):
     full_name: str | None = None
+    password: str = Field(..., min_length=12, description="Пароль должен быть не менее 12 символов")
     specialization: str | None = None
     can_authenticate: bool | None = None
-    settings: dict[str, Any] | None = None
+    is_active: bool | None = None
+    email: EmailStr | None = None
 
 
 class UserLoginSchema(BaseModel):

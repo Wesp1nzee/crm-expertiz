@@ -250,7 +250,7 @@ async def update_case(
 ) -> CaseResponse:
     service = CaseService(db)
     try:
-        result = await service.update_case(str(case_id), case_data, current_user.id, current_user.role)
+        result = await service.update_case(case_id, case_data, current_user.role)
         if not result:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Дело не найдено")
         return result
@@ -271,11 +271,8 @@ async def update_case(
     description="Выполняет мягкое удаление дела (пометка deleted_at)",
 )
 async def delete_case(case_id: UUID, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)) -> None:
-    if current_user.role == UserRole.EXPERT:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="У вас нет прав для удаления дела")
-
     service = CaseService(db)
-    success = await service.soft_delete_case(str(case_id), current_user.id, current_user.role)
+    success = await service.soft_delete_case(case_id, current_user.role)
     if not success:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Дело не найдено")
     return None

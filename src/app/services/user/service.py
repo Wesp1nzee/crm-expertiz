@@ -9,13 +9,8 @@ from sqlalchemy.orm import selectinload
 
 from src.app.core.auth.security import hash_password, verify_password
 from src.app.services.case.models import Case
-from src.app.services.user.models import User, UserEmailConfig
-from src.app.services.user.schemas import (
-    ROLE_PERMISSIONS,
-    UserCreate,
-    UserFilterParams,
-    UserLoginSchema,
-)
+from src.app.services.user.models import User, UserEmailConfig, UserRole
+from src.app.services.user.schemas import ROLE_PERMISSIONS, UserCreate, UserFilterParams, UserLoginSchema, UserUpdate
 
 
 class UserService:
@@ -170,3 +165,29 @@ class UserService:
         users_stmt = select(User).where(User.id.in_(user_ids))
         users_result = await self.db.execute(users_stmt)
         return list(users_result.scalars().all())
+
+    async def delete_user(self, user_id: UUID) -> None:
+        res = await self.db.get(User, user_id)
+        if not res:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Пользователь не найден")
+
+        await self.db.delete(res)
+        await self.db.commit()
+
+    async def update_user(self, user_id: UUID, update_data: UserUpdate, user_role: UserRole) -> None:
+        if user_role == UserRole.EXPERT:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="У вас нет прав для обновления пользователя.",
+            )
+        user = await self.db.get(User, user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="Пользователь не найден")
+
+        update_dict = update_data.model_dump(exclude_unset=True)
+        for field, value in update_dict.items():
+            if hasattr(user, field):
+                setattr(user, field, value)
+
+        await self.db.commit()
+        await self.db.refresh(user)

@@ -145,13 +145,12 @@ class CaseService:
             events=events_schemas,
         )
 
-    async def update_case(self, case_id: str, update_data: CaseUpdateRequest, user_id: UUID, user_role: UserRole) -> CaseResponse | None:
+    async def update_case(self, case_id: UUID, update_data: CaseUpdateRequest, user_role: UserRole) -> CaseResponse | None:
         """Обновляет дело (только для своей компании)"""
         if user_role == UserRole.EXPERT:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Эксперт не может обновлять данные дела")
 
-        case_uuid = UUID(case_id) if isinstance(case_id, str) else case_id
-        stmt = select(Case).where(Case.id == case_uuid, Case.deleted_at.is_(None))
+        stmt = select(Case).where(Case.id == case_id, Case.deleted_at.is_(None))
         result = await self.db.execute(stmt)
         case = result.scalars().first()
 
@@ -171,13 +170,12 @@ class CaseService:
 
         return CaseResponse.model_validate(case)
 
-    async def soft_delete_case(self, case_id: str, user_id: UUID, user_role: UserRole) -> bool:
+    async def soft_delete_case(self, case_id: UUID, user_role: UserRole) -> bool:
         """Мягкое удаление дела (только для своей компании)"""
         if user_role == UserRole.EXPERT:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Эксперт не может удалять дела")
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="У вас нет прав для удаления дела.")
 
-        case_uuid = UUID(case_id) if isinstance(case_id, str) else case_id
-        stmt = select(Case).where(Case.id == case_uuid, Case.deleted_at.is_(None))
+        stmt = select(Case).where(Case.id == case_id, Case.deleted_at.is_(None))
         result = await self.db.execute(stmt)
         case = result.scalars().first()
 
@@ -284,9 +282,7 @@ class CaseService:
                 condition = condition_func(param_value)
                 stmt = stmt.where(condition)
 
-        # Добавляем условие поиска в основной запрос
         if query_params.search:
-            # Повторно создаем условие поиска для основного запроса
             search_term = f"%{query_params.search}%"
             case_search_condition = (
                 (Case.number.ilike(search_term))
@@ -297,11 +293,9 @@ class CaseService:
                 | (Case.defendant.ilike(search_term))
                 | (Case.remarks.ilike(search_term))
             )
-            # Для основного запроса уже есть JOIN с Client
             case_search_condition = case_search_condition | (Client.name.ilike(search_term))
             stmt = stmt.where(case_search_condition)
 
-        # Сортировка
         if query_params.sort_field and query_params.sort_order:
             sort_column = None
             if query_params.sort_field == SortField.CLIENT_NAME:
@@ -315,7 +309,6 @@ class CaseService:
         else:
             stmt = stmt.order_by(desc(Case.created_at))
 
-        # Пагинация
         offset = (query_params.page - 1) * query_params.limit
         stmt = stmt.offset(offset).limit(query_params.limit)
 

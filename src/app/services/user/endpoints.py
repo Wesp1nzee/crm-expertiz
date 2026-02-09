@@ -1,4 +1,5 @@
 from typing import Any
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,7 +9,7 @@ from src.app.core.auth.session import SessionManager
 from src.app.core.database.session import get_db
 from src.app.core.redis import get_redis_client
 from src.app.services.user.models import User
-from src.app.services.user.schemas import LogoutResponse, SearchResultDTO, UserCreate, UserFilterParams, UserLoginSchema, UserRead
+from src.app.services.user.schemas import LogoutResponse, SearchResultDTO, UserCreate, UserFilterParams, UserLoginSchema, UserRead, UserUpdate
 from src.app.services.user.service import UserService
 
 router = APIRouter(prefix="/api/users", tags=["Users & Auth"])
@@ -69,15 +70,29 @@ async def get_me(current_user: User = Depends(get_current_user)) -> User:
     return current_user
 
 
-@router.post("/", response_model=UserRead, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=UserRead, status_code=status.HTTP_201_CREATED)
 async def create_user(user_in: UserCreate, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)) -> User:
     user_service = UserService(db)
     return await user_service.create_user(creator=current_user, user_in=user_in)
 
 
-@router.get("/", response_model=list[UserRead])
+@router.get("", response_model=list[UserRead])
 async def list_users(
     params: UserFilterParams = Depends(), db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)
 ) -> list[dict[Any, Any]]:
     user_service = UserService(db)
     return await user_service.get_users_list(current_user, params)
+
+
+@router.delete("/{user_id}")
+async def delete_user(user_id: UUID, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)) -> None:
+    service = UserService(db)
+    await service.delete_user(user_id)
+
+
+@router.patch("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def udate_user(
+    user_id: UUID, case_data: UserUpdate, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)
+) -> None:
+    service = UserService(db)
+    await service.update_user(user_id, case_data, current_user.role)

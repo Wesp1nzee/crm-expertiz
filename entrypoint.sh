@@ -1,11 +1,11 @@
 #!/bin/bash
-set -e # Exit immediately if a command exits with a non-zero status
+set -e
 
-echo "Applying database migrations..."
-# This command reads DB_URL from the environment variable set in docker-compose.yml
-uv run alembic upgrade head
+cd /app
 
-echo "Migrations applied successfully."
+echo "--- Applying migrations ---"
+python -m alembic upgrade head
 
-echo "Starting the application..."
-exec gunicorn --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000 src.main:app
+echo "--- Starting uvicorn ---"
+
+exec python -m uvicorn src.main:app --host 0.0.0.0 --port 8000
