@@ -23,7 +23,7 @@ class FolderCreate(FolderBase):
 class FolderResponse(FolderBase):
     id: uuid.UUID
     created_by_id: uuid.UUID | None
-    creator_name: str | None = None  # ← Добавили имя создателя
+    creator_name: str | None = None
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
 

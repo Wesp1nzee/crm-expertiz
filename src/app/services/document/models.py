@@ -31,7 +31,7 @@ class Folder(Base):
     # Иерархия папок
     parent_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("folders.id", ondelete="CASCADE"), nullable=True, index=True)
 
-    # Связь с делом (как в Document)
+    # Связь с делом
     case_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), nullable=True, index=True)
 
     # Кто создал папку (для ролевой модели)

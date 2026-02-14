@@ -126,7 +126,6 @@ async def download_folder_as_zip(
     """
     service = DocumentService(db)
 
-    # Проверяем наличие папки до создания архива
     folder_result = await db.execute(select(Folder).where(Folder.id == folder_id))
     folder = folder_result.scalar_one_or_none()
     if not folder:
@@ -135,7 +134,6 @@ async def download_folder_as_zip(
     async def generate_zip() -> AsyncGenerator[bytes]:
         buffer = io.BytesIO()
 
-        # Создаем ZIP-архив в памяти
         with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
             await service.add_folder_to_zip(zip_file, folder_id, "", current_user.id, current_user.role)
 
@@ -146,7 +144,6 @@ async def download_folder_as_zip(
                 break
             yield chunk
 
-    # Очищаем имя файла от потенциально опасных символов
     safe_folder_name = folder.name.replace('"', "").replace("'", "").replace(";", "").replace(",", "")
 
     encoded_filename = urllib.parse.quote(safe_folder_name, safe="")

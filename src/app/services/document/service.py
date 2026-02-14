@@ -1,4 +1,3 @@
-# src/app/services/document/service.py
 import os
 import uuid
 import zipfile
@@ -103,7 +102,17 @@ class DocumentService:
             )
 
         reverse = order == "desc"
-        result.sort(key=lambda x: getattr(x, sort_by if hasattr(x, sort_by) else "created_at"), reverse=reverse)
+
+        def sort_key(x: FileSystemEntry) -> str | int | datetime:
+            attr_name: str = sort_by if hasattr(x, sort_by) else "created_at"
+            val = getattr(x, attr_name)
+
+            if val is None:
+                return 0 if sort_by == "size" else ""
+
+            return val  # type: ignore[no-any-return]
+
+        result.sort(key=sort_key, reverse=reverse)
 
         return result
 
@@ -188,26 +197,19 @@ class DocumentService:
         folders = folders_result.scalars().all()
         documents = documents_result.scalars().all()
 
-        # Добавляем документы в ZIP
         for doc in documents:
-            # Проверяем права доступа к документу
             if await self._check_document_access(doc, user_id, user_role):
-                # Получаем содержимое документа из S3
                 file_content = await s3_storage.get_file_content(doc.file_path)
 
-                # Формируем путь внутри ZIP-архива
                 zip_path = f"{path_prefix}{doc.title}" if path_prefix else doc.title
                 zip_file.writestr(zip_path, file_content)
 
-        # Рекурсивно добавляем подпапки
         for folder in folders:
-            # Проверяем права доступа к папке
             if await self._check_folder_access(folder, user_id, user_role):
                 subfolder_path = f"{path_prefix}{folder.name}/" if path_prefix else f"{folder.name}/"
 
                 zip_file.writestr(subfolder_path, "")
 
-                # Рекурсивно добавляем содержимое подпапки
                 await self.add_folder_to_zip(zip_file, folder.id, subfolder_path, user_id, user_role)
 
     async def update_document(
@@ -224,16 +226,13 @@ class DocumentService:
         if not doc:
             return None
 
-        # Проверка доступа
         if not await self._check_document_access(doc, user_id, user_role):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет прав для обновления этого документа")
 
-        # Обновление полей
         if "title" in update_data and update_data["title"]:
             doc.title = update_data["title"]
 
         if "case_id" in update_data:
-            # Если case_id = None, удаляем привязку к делу
             doc.case_id = update_data["case_id"]
 
         if "folder_id" in update_data:
@@ -266,19 +265,15 @@ class DocumentService:
         if not folder:
             return None
 
-        # Проверка доступа
         if not await self._check_folder_access(folder, user_id, user_role):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет прав для обновления этой папки")
 
-        # Обновление имени
         if "name" in update_data and update_data["name"]:
             folder.name = update_data["name"]
 
-        # Обновление case_id
         if "case_id" in update_data:
             folder.case_id = update_data["case_id"]
 
-        # Обновление parent_id (перемещение папки)
         if "parent_id" in update_data:
             new_parent_id = update_data["parent_id"]
 
