@@ -19,6 +19,7 @@ os.environ.setdefault("ADMIN_FULL_NAME", "Admin")
 os.environ.setdefault("ADMIN_PASSWORD", "password")
 
 from src.app.core.auth.deps import get_current_user
+from src.app.core.database.base import Base
 from src.app.core.database.session import get_db
 from src.app.services.case.models import Case
 from src.app.services.client.models import Client, Contact
@@ -37,14 +38,12 @@ AsyncSessionLocalTest = async_sessionmaker(engine_test, expire_on_commit=False, 
 async def init_db() -> AsyncGenerator[None]:
     """Инициализация тестовой базы данных"""
     async with engine_test.begin() as conn:
-        for model in TEST_MODELS:
-            await conn.run_sync(model.metadata.create_all)
+        await conn.run_sync(Base.metadata.create_all)
 
     yield
 
     async with engine_test.begin() as conn:
-        for model in reversed(TEST_MODELS):
-            await conn.run_sync(model.metadata.drop_all)
+        await conn.run_sync(Base.metadata.drop_all)
 
     await engine_test.dispose()
 
