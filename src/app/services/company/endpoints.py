@@ -34,14 +34,14 @@ async def register_company(
 
 
 @router.get("/me", response_model=CompanyResponse)
-async def get_my_company(current_user: User = Depends(get_current_user)) -> Company:
+async def get_my_company(current_user: User = Depends(get_current_user)) -> CompanyResponse:
     """
     Получение данных о компании, к которой принадлежит текущий пользователь.
     """
     if not current_user.company:
         raise HTTPException(status_code=404, detail="Компания не найдена")
 
-    return current_user.company
+    return CompanyResponse.model_validate(current_user.company)
 
 
 # @router.patch("/me", response_model=CompanyResponse)

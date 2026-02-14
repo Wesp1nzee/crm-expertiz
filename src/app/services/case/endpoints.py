@@ -3,10 +3,7 @@ import logging
 import uuid
 import zipfile
 from collections.abc import AsyncGenerator
-from datetime import datetime
-from decimal import Decimal
 from uuid import UUID
-from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
@@ -17,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.app.core.auth.deps import get_current_user
 from src.app.core.database.session import get_db
 from src.app.core.storage.s3 import s3_storage
-from src.app.services.case.models import Case, CaseStatus
+from src.app.services.case.models import Case
 from src.app.services.case.schemas import (
     CaseCreateRequest,
     CaseDetailsResponse,
@@ -51,47 +48,8 @@ async def get_financial_summary(
     """
     Возвращает финансовую сводку по делам текущего пользователя или всех дел в зависимости от роли.
     """
-    cases_query = select(Case).where(Case.deleted_at.is_(None))
-
-    if current_user.role == UserRole.EXPERT:
-        cases_query = cases_query.where(Case.assigned_user_id == current_user.id)
-
-    cases_result = await db.execute(cases_query)
-    all_cases = cases_result.scalars().all()
-
-    completed_cases = [case for case in all_cases if case.status != CaseStatus.in_work]
-    total_revenue = sum(Decimal(str(case.cost)) for case in completed_cases) if completed_cases else Decimal("0.00")
-
-    active_cases = [case for case in all_cases if case.status == CaseStatus.in_work]
-
-    now = datetime.now(ZoneInfo("UTC"))
-    overdue_cases = []
-    for case in active_cases:
-        deadline = case.deadline
-        if deadline.tzinfo is None:
-            deadline = deadline.replace(tzinfo=ZoneInfo("UTC"))
-        if deadline < now:
-            overdue_cases.append(case)
-
-    average_case_cost = Decimal("0.00")
-
-    if len(completed_cases) > 0:
-        average_case_cost = total_revenue / Decimal(len(completed_cases)) if total_revenue > 0 else Decimal("0.00")
-
-    pending_cases = [case for case in all_cases if case.remaining_debt > 0]
-    pending_payments = len(pending_cases)
-    pending_amount = sum(Decimal(str(case.remaining_debt)) for case in pending_cases) if pending_cases else Decimal("0.00")
-
-    return FinancialSummaryResponse(
-        total_revenue=total_revenue,
-        pending_payments=pending_payments,
-        pending_amount=pending_amount,
-        average_case_cost=average_case_cost,
-        total_cases=len(all_cases),
-        completed_cases=len(completed_cases),
-        active_cases=len(active_cases),
-        overdue_cases=len(overdue_cases),
-    )
+    service = CaseService(db)
+    return await service.get_financial_summary(current_user.id, current_user.role)
 
 
 @router.get("/{case_id}/download-documents", summary="Скачать все документы по делу как ZIP-архив")

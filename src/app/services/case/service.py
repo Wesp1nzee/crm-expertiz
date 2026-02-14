@@ -3,6 +3,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException, status
 from sqlalchemy import asc, desc, func, select
@@ -21,6 +22,7 @@ from src.app.services.case.schemas import (
     CaseUpdateRequest,
     ClientResponse,
     DocumentResponse,
+    FinancialSummaryResponse,
     GetCasesQuery,
     GetCasesResponse,
     MailMessageResponse,
@@ -37,6 +39,52 @@ from src.app.services.user.models import User, UserRole
 class CaseService:
     def __init__(self, db_session: AsyncSession) -> None:
         self.db = db_session
+
+    async def get_financial_summary(self, user_id: UUID, user_role: UserRole) -> FinancialSummaryResponse:
+        """
+        Возвращает финансовую сводку по делам текущего пользователя или всех дел в зависимости от роли.
+        """
+        cases_query = select(Case).where(Case.deleted_at.is_(None))
+
+        if user_role == UserRole.EXPERT:
+            cases_query = cases_query.where(Case.assigned_user_id == user_id)
+
+        cases_result = await self.db.execute(cases_query)
+        all_cases = cases_result.scalars().all()
+
+        completed_cases = [case for case in all_cases if case.status != CaseStatus.in_work]
+        total_revenue = sum(Decimal(str(case.cost)) for case in completed_cases) if completed_cases else Decimal("0.00")
+
+        active_cases = [case for case in all_cases if case.status == CaseStatus.in_work]
+
+        now = datetime.now(ZoneInfo("UTC"))
+        overdue_cases = []
+        for case in active_cases:
+            deadline = case.deadline
+            if deadline.tzinfo is None:
+                deadline = deadline.replace(tzinfo=ZoneInfo("UTC"))
+            if deadline < now:
+                overdue_cases.append(case)
+
+        average_case_cost = Decimal("0.00")
+
+        if len(completed_cases) > 0:
+            average_case_cost = total_revenue / Decimal(len(completed_cases)) if total_revenue > 0 else Decimal("0.00")
+
+        pending_cases = [case for case in all_cases if case.remaining_debt > 0]
+        pending_payments = len(pending_cases)
+        pending_amount = sum(Decimal(str(case.remaining_debt)) for case in pending_cases) if pending_cases else Decimal("0.00")
+
+        return FinancialSummaryResponse(
+            total_revenue=total_revenue,
+            pending_payments=pending_payments,
+            pending_amount=pending_amount,
+            average_case_cost=average_case_cost,
+            total_cases=len(all_cases),
+            completed_cases=len(completed_cases),
+            active_cases=len(active_cases),
+            overdue_cases=len(overdue_cases),
+        )
 
     async def create_case(self, case_data: CaseCreateRequest, user_id: UUID, user_role: UserRole) -> CaseResponse:
         """Создает новое дело"""
