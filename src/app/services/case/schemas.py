@@ -6,6 +6,13 @@ from enum import Enum
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class EfficiencyMetrics(BaseModel):
+    avg_completion_time: float  # Среднее время закрытия (в днях)
+    conversion_rate: float  # % дел, перешедших в выполненные за месяц
+    conversion_trend: float  # Разница в конверсии по сравнению с прошлым месяцем
+    throughput: float  # Пропускная способность (кол-во закрытых дел на 1 сотрудника)
+
+
 class FinancialSummaryResponse(BaseModel):
     total_revenue: Decimal
     pending_payments: int
@@ -15,6 +22,7 @@ class FinancialSummaryResponse(BaseModel):
     completed_cases: int
     active_cases: int
     overdue_cases: int
+    efficiency: EfficiencyMetrics
 
 
 class CaseStatus(str, Enum):

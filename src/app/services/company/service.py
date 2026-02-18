@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -55,3 +57,14 @@ class CompanyService:
             await self.db.rollback()
             print(f"Ошибка при регистрации: {e}")
             raise e
+
+    async def get_company_by_id(self, company_id: UUID) -> Company:
+        """
+        Получение данных о компании по её ID.
+        """
+        company = await self.db.get(Company, company_id)
+
+        if not company:
+            raise HTTPException(status_code=404, detail=f"Компания с ID {company_id} не найдена")
+
+        return company

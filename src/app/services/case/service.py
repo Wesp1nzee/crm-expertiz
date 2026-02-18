@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -22,6 +22,7 @@ from src.app.services.case.schemas import (
     CaseUpdateRequest,
     ClientResponse,
     DocumentResponse,
+    EfficiencyMetrics,
     FinancialSummaryResponse,
     GetCasesQuery,
     GetCasesResponse,
@@ -41,49 +42,68 @@ class CaseService:
         self.db = db_session
 
     async def get_financial_summary(self, user_id: UUID, user_role: UserRole) -> FinancialSummaryResponse:
-        """
-        Возвращает финансовую сводку по делам текущего пользователя или всех дел в зависимости от роли.
-        """
-        cases_query = select(Case).where(Case.deleted_at.is_(None))
-
-        if user_role == UserRole.EXPERT:
-            cases_query = cases_query.where(Case.assigned_user_id == user_id)
-
-        cases_result = await self.db.execute(cases_query)
-        all_cases = cases_result.scalars().all()
-
-        completed_cases = [case for case in all_cases if case.status != CaseStatus.in_work]
-        total_revenue = sum(Decimal(str(case.cost)) for case in completed_cases) if completed_cases else Decimal("0.00")
-
-        active_cases = [case for case in all_cases if case.status == CaseStatus.in_work]
-
         now = datetime.now(ZoneInfo("UTC"))
-        overdue_cases = []
+        month_ago = now - timedelta(days=30)
+        two_months_ago = now - timedelta(days=60)
+
+        query = select(Case).where(Case.deleted_at.is_(None))
+        if user_role == UserRole.EXPERT:
+            query = query.where(Case.assigned_user_id == user_id)
+
+        result = await self.db.execute(query)
+        all_cases = result.scalars().all()
+
+        completed_cases = [c for c in all_cases if c.status != CaseStatus.in_work]
+        active_cases = [c for c in all_cases if c.status == CaseStatus.in_work]
+
+        total_revenue = sum(Decimal(str(c.cost)) for c in completed_cases)
+        pending_cases = [c for c in all_cases if c.remaining_debt > 0]
+
+        durations = [(c.completion_date - c.start_date).days for c in completed_cases if c.completion_date and c.start_date]
+        avg_time = sum(durations) / len(durations) if durations else 0
+
+        def get_conv_rate(start_date: datetime, end_date: datetime) -> float:
+            period_cases = [c for c in all_cases if start_date <= c.created_at < end_date]
+            if not period_cases:
+                return 0
+
+            executed_in_period = [c for c in period_cases if c.status == CaseStatus.executed]
+            return len(executed_in_period) / len(period_cases) * 100
+
+        current_conv = get_conv_rate(month_ago, now)
+        past_conv = get_conv_rate(two_months_ago, month_ago)
+        conv_trend = current_conv - past_conv
+
+        recent_completed = [c for c in completed_cases if c.completion_date and c.completion_date >= month_ago]
+
+        active_experts_ids = {c.assigned_user_id for c in recent_completed if c.assigned_user_id}
+        unique_experts_count = len(active_experts_ids)
+
+        throughput = len(recent_completed) / unique_experts_count if unique_experts_count > 0 else 0
+
+        overdue_count = 0
         for case in active_cases:
             deadline = case.deadline
             if deadline.tzinfo is None:
                 deadline = deadline.replace(tzinfo=ZoneInfo("UTC"))
             if deadline < now:
-                overdue_cases.append(case)
-
-        average_case_cost = Decimal("0.00")
-
-        if len(completed_cases) > 0:
-            average_case_cost = total_revenue / Decimal(len(completed_cases)) if total_revenue > 0 else Decimal("0.00")
-
-        pending_cases = [case for case in all_cases if case.remaining_debt > 0]
-        pending_payments = len(pending_cases)
-        pending_amount = sum(Decimal(str(case.remaining_debt)) for case in pending_cases) if pending_cases else Decimal("0.00")
+                overdue_count += 1
 
         return FinancialSummaryResponse(
             total_revenue=total_revenue,
-            pending_payments=pending_payments,
-            pending_amount=pending_amount,
-            average_case_cost=average_case_cost,
+            pending_payments=len(pending_cases),
+            pending_amount=sum(Decimal(str(c.remaining_debt)) for c in pending_cases),
+            average_case_cost=total_revenue / len(completed_cases) if completed_cases else Decimal("0.00"),
             total_cases=len(all_cases),
             completed_cases=len(completed_cases),
             active_cases=len(active_cases),
-            overdue_cases=len(overdue_cases),
+            overdue_cases=overdue_count,
+            efficiency=EfficiencyMetrics(
+                avg_completion_time=round(avg_time, 1),
+                conversion_rate=round(current_conv, 1),
+                conversion_trend=round(conv_trend, 1),
+                throughput=round(throughput, 2),
+            ),
         )
 
     async def create_case(self, case_data: CaseCreateRequest, user_id: UUID, user_role: UserRole) -> CaseResponse:
