@@ -1,5 +1,7 @@
-from sqlalchemy import MetaData
-from sqlalchemy.orm import DeclarativeBase
+import uuid
+
+from sqlalchemy import UUID, ForeignKey, MetaData
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 POSTGRES_NAMING_CONVENTION = {
     "ix": "ix_%(column_0_label)s",
@@ -12,3 +14,19 @@ POSTGRES_NAMING_CONVENTION = {
 
 class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=POSTGRES_NAMING_CONVENTION)
+
+
+class TenantBase(Base):
+    """
+    Абстрактный базовый класс для multi-tenancy (привязка к компании).
+    Все модели, требующие изоляции по компаниям, должны наследоваться от него.
+    """
+
+    __abstract__ = True
+
+    company_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("companies.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )

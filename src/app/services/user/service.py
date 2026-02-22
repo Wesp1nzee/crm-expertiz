@@ -7,6 +7,7 @@ from sqlalchemy import asc, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from src.app.core.auth.deps import UserContext
 from src.app.core.auth.security import hash_password, verify_password
 from src.app.services.case.models import Case
 from src.app.services.user.models import User, UserEmailConfig, UserRole
@@ -27,8 +28,8 @@ class UserService:
             return None
         return user
 
-    async def set_online_status(self, user: User, is_online: bool) -> None:
-        db_user = await self.db.get(User, user.id)
+    async def set_online_status(self, user_id: UUID, is_online: bool) -> None:
+        db_user = await self.db.get(User, user_id)
         if not db_user:
             raise HTTPException(status_code=404, detail="Пользователь не найден при попытке обновить статус.")
 
@@ -39,7 +40,7 @@ class UserService:
 
         await self.db.commit()
 
-    async def create_user(self, creator: User, user_in: UserCreate) -> User:
+    async def create_user(self, creator: UserContext, user_in: UserCreate) -> User:
         if user_in.role not in ROLE_PERMISSIONS.get(creator.role, []):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -73,7 +74,7 @@ class UserService:
         await self.db.refresh(new_user)
         return new_user
 
-    async def get_users_list(self, current_user: User, params: UserFilterParams) -> list[dict[Any, Any]]:
+    async def get_users_list(self, current_user: UserContext, params: UserFilterParams) -> list[dict[Any, Any]]:
         allowed_roles = ROLE_PERMISSIONS.get(current_user.role, [])
 
         case_count_subquery = (

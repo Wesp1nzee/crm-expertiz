@@ -1,12 +1,11 @@
 from fastapi import APIRouter, Depends, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.core.auth.deps import get_current_user
+from src.app.core.auth.deps import UserContext, get_current_user
 from src.app.core.database.session import get_db
 from src.app.services.company.models import Company
 from src.app.services.company.schemas import CompanyRegister, CompanyResponse
 from src.app.services.company.service import CompanyService
-from src.app.services.user.models import User
 
 router = APIRouter(prefix="/api/companies", tags=["Companies"])
 
@@ -34,7 +33,7 @@ async def register_company(
 
 
 @router.get("/me", response_model=CompanyResponse)
-async def get_my_company(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> CompanyResponse:
+async def get_my_company(current_user: UserContext = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> CompanyResponse:
     """
     Получение данных о компании, к которой принадлежит текущий пользователь.
     """
@@ -43,7 +42,7 @@ async def get_my_company(current_user: User = Depends(get_current_user), db: Asy
 
 
 # @router.patch("/me", response_model=CompanyResponse)
-# async def update_my_company(payload: CompanyUpdate, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+# async def update_my_company(payload: CompanyUpdate, current_user: UserContext = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
 #     """
 #     Обновление данных своей компании (доступно только админам/CEO).
 #     """

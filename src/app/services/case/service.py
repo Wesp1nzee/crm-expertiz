@@ -10,7 +10,6 @@ from sqlalchemy import asc, desc, func, select
 from sqlalchemy.exc import NoResultFound
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-from sqlalchemy.sql import Select
 
 from src.app.services.case.models import Case, CaseStatus
 from src.app.services.case.schemas import (
@@ -41,12 +40,13 @@ class CaseService:
     def __init__(self, db_session: AsyncSession) -> None:
         self.db = db_session
 
-    async def get_financial_summary(self, user_id: UUID, user_role: UserRole) -> FinancialSummaryResponse:
+    async def get_financial_summary(self, user_id: UUID, user_role: UserRole, company_id: UUID) -> FinancialSummaryResponse:
         now = datetime.now(ZoneInfo("UTC"))
         month_ago = now - timedelta(days=30)
         two_months_ago = now - timedelta(days=60)
 
-        query = select(Case).where(Case.deleted_at.is_(None))
+        # Фильтрация по компании обязательна
+        query = select(Case).where(Case.deleted_at.is_(None), Case.company_id == company_id)
         if user_role == UserRole.EXPERT:
             query = query.where(Case.assigned_user_id == user_id)
 
@@ -66,7 +66,6 @@ class CaseService:
             period_cases = [c for c in all_cases if start_date <= c.created_at < end_date]
             if not period_cases:
                 return 0
-
             executed_in_period = [c for c in period_cases if c.status == CaseStatus.executed]
             return len(executed_in_period) / len(period_cases) * 100
 
@@ -75,10 +74,8 @@ class CaseService:
         conv_trend = current_conv - past_conv
 
         recent_completed = [c for c in completed_cases if c.completion_date and c.completion_date >= month_ago]
-
         active_experts_ids = {c.assigned_user_id for c in recent_completed if c.assigned_user_id}
         unique_experts_count = len(active_experts_ids)
-
         throughput = len(recent_completed) / unique_experts_count if unique_experts_count > 0 else 0
 
         overdue_count = 0
@@ -106,7 +103,7 @@ class CaseService:
             ),
         )
 
-    async def create_case(self, case_data: CaseCreateRequest, user_id: UUID, user_role: UserRole) -> CaseResponse:
+    async def create_case(self, case_data: CaseCreateRequest, user_id: UUID, user_role: UserRole, company_id: UUID) -> CaseResponse:
         """Создает новое дело"""
         if user_role == UserRole.EXPERT:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Эксперт не может создавать новые дела")
@@ -114,26 +111,30 @@ class CaseService:
         if case_data.deadline < case_data.start_date:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Срок выполнения не может быть раньше даты начала")
 
-        existing_case_query = await self.db.execute(select(Case).where(Case.number == case_data.number))
+        # Проверка уникальности номера внутри конкретной компании
+        existing_case_query = await self.db.execute(select(Case).where(Case.number == case_data.number, Case.company_id == company_id))
         if existing_case_query.scalar():
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Дело с номером '{case_data.number}' уже существует")
 
-        existing_case_number_query = await self.db.execute(select(Case).where(Case.case_number == case_data.case_number))
+        existing_case_number_query = await self.db.execute(
+            select(Case).where(Case.case_number == case_data.case_number, Case.company_id == company_id)
+        )
         if existing_case_number_query.scalar():
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail=f"Дело с номером производства '{case_data.case_number}' уже существует"
             )
 
         client = await self.db.get(Client, case_data.client_id)
-        if not client:
+        if not client or client.company_id != company_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Клиент с ID {case_data.client_id} не найден")
 
         if case_data.assigned_user_id:
             user = await self.db.get(User, case_data.assigned_user_id)
-            if not user:
+            if not user or user.company_id != company_id:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Эксперт с ID {case_data.assigned_user_id} не найден")
 
         data = case_data.model_dump()
+        data["company_id"] = company_id  # Установка компании из контекста
 
         decimal_fields = ["cost", "bank_transfer_amount", "cash_amount", "remaining_debt"]
         for field in decimal_fields:
@@ -157,12 +158,9 @@ class CaseService:
             self.db.add(case)
             await self.db.commit()
             await self.db.refresh(case)
-
             return CaseResponse.model_validate(case)
-
         except Exception as db_error:
             await self.db.rollback()
-            print(f"Database error during case creation: {db_error}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Ошибка при сохранении дела в базе данных"
             ) from db_error
@@ -172,11 +170,8 @@ class CaseService:
         case_id: str,
         user_id: UUID,
         user_role: str,
+        company_id: UUID,
     ) -> CaseDetailsResponse | None:
-        """
-        Возвращает полную информацию о деле со всеми связями.
-        Учитывает RBAC: эксперты видят только свои дела.
-        """
         case_uuid = UUID(case_id) if isinstance(case_id, str) else case_id
         stmt = (
             select(Case)
@@ -187,7 +182,7 @@ class CaseService:
                 selectinload(Case.documents).selectinload(Document.uploaded_by),
                 selectinload(Case.mail_messages),
             )
-            .where(Case.id == case_uuid)
+            .where(Case.id == case_uuid, Case.company_id == company_id)  # Фильтр компании
         )
 
         if user_role not in {"admin", "ceo", "accountant"}:
@@ -199,26 +194,19 @@ class CaseService:
         except NoResultFound:
             return None
 
-        case_schema = CaseResponse.model_validate(case)
-        client_schema = ClientResponse.model_validate(case.client)
-        assigned_experts_schemas = [UserResponse.model_validate(case.assigned_user)] if case.assigned_user else []
-        documents_schemas = [DocumentResponse.model_validate(doc) for doc in case.documents]
-        events_schemas = [MailMessageResponse.model_validate(msg) for msg in case.mail_messages]
-
         return CaseDetailsResponse(
-            case=case_schema,
-            client=client_schema,
-            assigned_experts=assigned_experts_schemas,
-            documents=documents_schemas,
-            events=events_schemas,
+            case=CaseResponse.model_validate(case),
+            client=ClientResponse.model_validate(case.client),
+            assigned_experts=[UserResponse.model_validate(case.assigned_user)] if case.assigned_user else [],
+            documents=[DocumentResponse.model_validate(doc) for doc in case.documents],
+            events=[MailMessageResponse.model_validate(msg) for msg in case.mail_messages],
         )
 
-    async def update_case(self, case_id: UUID, update_data: CaseUpdateRequest, user_role: UserRole) -> CaseResponse | None:
-        """Обновляет дело (только для своей компании)"""
+    async def update_case(self, case_id: UUID, update_data: CaseUpdateRequest, user_role: UserRole, company_id: UUID) -> CaseResponse | None:
         if user_role == UserRole.EXPERT:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Эксперт не может обновлять данные дела")
 
-        stmt = select(Case).where(Case.id == case_id, Case.deleted_at.is_(None))
+        stmt = select(Case).where(Case.id == case_id, Case.company_id == company_id, Case.deleted_at.is_(None))
         result = await self.db.execute(stmt)
         case = result.scalars().first()
 
@@ -235,15 +223,13 @@ class CaseService:
 
         await self.db.commit()
         await self.db.refresh(case)
-
         return CaseResponse.model_validate(case)
 
-    async def soft_delete_case(self, case_id: UUID, user_role: UserRole) -> bool:
-        """Мягкое удаление дела (только для своей компании)"""
+    async def soft_delete_case(self, case_id: UUID, user_role: UserRole, company_id: UUID) -> bool:
         if user_role == UserRole.EXPERT:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="У вас нет прав для удаления дела.")
 
-        stmt = select(Case).where(Case.id == case_id, Case.deleted_at.is_(None))
+        stmt = select(Case).where(Case.id == case_id, Case.company_id == company_id, Case.deleted_at.is_(None))
         result = await self.db.execute(stmt)
         case = result.scalars().first()
 
@@ -254,15 +240,14 @@ class CaseService:
         await self.db.commit()
         return True
 
-    async def get_cases(self, query_params: GetCasesQuery, user_id: UUID, user_role: UserRole) -> GetCasesResponse:
-        """Получает список дел с фильтрацией, пагинацией, сортировкой и статистикой (эксперт видит только свои дела)"""
-
-        base_count_stmt = select(func.count(Case.id)).where(Case.deleted_at.is_(None))
-
+    async def get_cases(self, query_params: GetCasesQuery, user_id: UUID, user_role: UserRole, company_id: UUID) -> GetCasesResponse:
+        base_where = [Case.deleted_at.is_(None), Case.company_id == company_id]
         if user_role == UserRole.EXPERT:
-            base_count_stmt = base_count_stmt.where(Case.assigned_user_id == user_id)
+            base_where.append(Case.assigned_user_id == user_id)
 
-        filters: list[tuple[Any | None, Callable[[Any], Any] | None]] = [
+        base_count_stmt = select(func.count(Case.id)).where(*base_where)
+
+        filters: list[tuple[Any | None, Callable[[Any], Any]]] = [
             (query_params.status, lambda q: Case.status.in_(q) if isinstance(q, list) else Case.status == q),
             (query_params.expert_id, lambda q: Case.assigned_user_id == q),
             (query_params.client_id, lambda q: Case.client_id == q),
@@ -285,9 +270,8 @@ class CaseService:
         ]
 
         for param_value, condition_func in filters:
-            if param_value is not None and condition_func is not None:
-                condition = condition_func(param_value)
-                base_count_stmt = base_count_stmt.where(condition)
+            if param_value is not None:
+                base_count_stmt = base_count_stmt.where(condition_func(param_value))
 
         search_condition = None
         if query_params.search:
@@ -301,71 +285,37 @@ class CaseService:
                 | (Case.defendant.ilike(search_term))
                 | (Case.remarks.ilike(search_term))
             )
-            base_count_stmt = base_count_stmt.outerjoin(Client, Case.client_id == Client.id)
-            search_condition = search_condition | (Client.name.ilike(search_term))
-            base_count_stmt = base_count_stmt.where(search_condition)
+            base_count_stmt = base_count_stmt.outerjoin(Client, Case.client_id == Client.id).where(
+                search_condition | Client.name.ilike(search_term)
+            )
 
-        total_count_result = await self.db.execute(base_count_stmt)
-        total_count = total_count_result.scalar() or 0
+        total_count = (await self.db.execute(base_count_stmt)).scalar() or 0
 
         inactive_statuses = [CaseStatus.executed, CaseStatus.cancelled, CaseStatus.archive]
-        active_count_stmt = select(func.count(Case.id)).where(Case.id.in_(select(Case.id).where(Case.deleted_at.is_(None))))
-
-        if user_role == UserRole.EXPERT:
-            active_count_stmt = active_count_stmt.where(Case.assigned_user_id == user_id)
-
-        active_count_stmt = active_count_stmt.where(Case.status.notin_(inactive_statuses))
-        active_count_result = await self.db.execute(active_count_stmt)
-        active_count = active_count_result.scalar() or 0
+        active_count_stmt = select(func.count(Case.id)).where(*base_where, Case.status.notin_(inactive_statuses))
+        active_count = (await self.db.execute(active_count_stmt)).scalar() or 0
 
         now = datetime.now()
-        overdue_count_stmt = select(func.count(Case.id)).where(
-            Case.id.in_(select(Case.id).where(Case.deleted_at.is_(None))), Case.status.notin_(inactive_statuses), Case.deadline < now
-        )
+        overdue_count_stmt = select(func.count(Case.id)).where(*base_where, Case.status.notin_(inactive_statuses), Case.deadline < now)
+        overdue_count = (await self.db.execute(overdue_count_stmt)).scalar() or 0
 
-        if user_role == UserRole.EXPERT:
-            overdue_count_stmt = overdue_count_stmt.where(Case.assigned_user_id == user_id)
-
-        overdue_count_result = await self.db.execute(overdue_count_stmt)
-        overdue_count = overdue_count_result.scalar() or 0
-
-        completed_count = max(0, total_count - active_count)
-
-        stmt: Select[Any] = (
+        stmt = (
             select(Case)
             .outerjoin(Client, Case.client_id == Client.id)
             .outerjoin(User, Case.assigned_user_id == User.id)
-            .options(
-                selectinload(Case.assigned_user),
-                selectinload(Case.client),
-            )
-            .where(Case.deleted_at.is_(None))
+            .options(selectinload(Case.assigned_user), selectinload(Case.client))
+            .where(*base_where)
         )
 
-        if user_role == UserRole.EXPERT:
-            stmt = stmt.where(Case.assigned_user_id == user_id)
-
         for param_value, condition_func in filters:
-            if param_value is not None and condition_func is not None:
-                condition = condition_func(param_value)
-                stmt = stmt.where(condition)
+            if param_value is not None:
+                stmt = stmt.where(condition_func(param_value))
 
-        if query_params.search:
+        if query_params.search and search_condition is not None:
             search_term = f"%{query_params.search}%"
-            case_search_condition = (
-                (Case.number.ilike(search_term))
-                | (Case.case_number.ilike(search_term))
-                | (Case.authority.ilike(search_term))
-                | (Case.object_address.ilike(search_term))
-                | (Case.plaintiff.ilike(search_term))
-                | (Case.defendant.ilike(search_term))
-                | (Case.remarks.ilike(search_term))
-            )
-            case_search_condition = case_search_condition | (Client.name.ilike(search_term))
-            stmt = stmt.where(case_search_condition)
+            stmt = stmt.where(search_condition | Client.name.ilike(search_term))
 
         if query_params.sort_field and query_params.sort_order:
-            sort_column = None
             if query_params.sort_field == SortField.CLIENT_NAME:
                 sort_column = Client.name
             elif query_params.sort_field == SortField.EXPERT_NAME:
@@ -378,49 +328,32 @@ class CaseService:
             stmt = stmt.order_by(desc(Case.created_at))
 
         offset = (query_params.page - 1) * query_params.limit
-        stmt = stmt.offset(offset).limit(query_params.limit)
-
-        result = await self.db.execute(stmt)
+        result = await self.db.execute(stmt.offset(offset).limit(query_params.limit))
         cases = result.scalars().all()
-        total_pages = max(1, (total_count + query_params.limit - 1) // query_params.limit)
-
-        case_responses = [
-            CaseResponse.model_validate(case).model_copy(
-                update={"assigned_expert": UserResponse.model_validate(case.assigned_user) if case.assigned_user else None}
-            )
-            for case in cases
-        ]
 
         return GetCasesResponse(
-            data=case_responses,
+            data=[
+                CaseResponse.model_validate(c).model_copy(
+                    update={"assigned_expert": UserResponse.model_validate(c.assigned_user) if c.assigned_user else None}
+                )
+                for c in cases
+            ],
             pagination=PaginationInfo(
                 total=total_count,
                 page=query_params.page,
                 limit=query_params.limit,
-                total_pages=total_pages,
+                total_pages=max(1, (total_count + query_params.limit - 1) // query_params.limit),
             ),
-            summary=CasesSummary(
-                active=active_count,
-                overdue=overdue_count,
-                completed=completed_count,
-            ),
+            summary=CasesSummary(active=active_count, overdue=overdue_count, completed=max(0, total_count - active_count)),
         )
 
-    async def suggest_cases(self, query: str, user_id: UUID, user_role: UserRole) -> list[CaseSuggestionResponse]:
-        """
-        Возвращает подсказки по делам, основываясь на поисковом запросе.
-        Эксперты видят только свои дела.
-        """
+    async def suggest_cases(self, query: str, user_id: UUID, user_role: UserRole, company_id: UUID) -> list[CaseSuggestionResponse]:
         search_pattern = f"%{query}%"
-
         stmt = (
-            select(
-                Case.id,
-                Case.number,
-                Case.case_number,
-            )
+            select(Case.id, Case.number, Case.case_number)
             .where(
                 Case.deleted_at.is_(None),
+                Case.company_id == company_id,
                 (Case.number.ilike(search_pattern)) | (Case.case_number.ilike(search_pattern)),
             )
             .order_by(Case.updated_at.desc())
@@ -430,16 +363,5 @@ class CaseService:
         if user_role == UserRole.EXPERT:
             stmt = stmt.where(Case.assigned_user_id == user_id)
 
-        result = await self.db.execute(stmt)
-        rows = result.all()
-
-        suggestions = []
-        for row in rows:
-            suggestion = CaseSuggestionResponse(
-                id=row.id,
-                number=row.number,
-                case_number=row.case_number,
-            )
-            suggestions.append(suggestion)
-
-        return suggestions
+        rows = (await self.db.execute(stmt)).all()
+        return [CaseSuggestionResponse(id=r.id, number=r.number, case_number=r.case_number) for r in rows]

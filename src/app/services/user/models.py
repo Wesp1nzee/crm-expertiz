@@ -8,7 +8,7 @@ from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
-from src.app.core.database.base import Base
+from src.app.core.database.base import Base, TenantBase
 
 if TYPE_CHECKING:
     from src.app.services.case import Case
@@ -24,10 +24,11 @@ class UserRole(str, enum.Enum):
     EXPERT = "expert"
 
 
-class User(Base):
+class User(TenantBase):
     __tablename__ = "users"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
     hashed_password: Mapped[str] = mapped_column(Text, nullable=False)
     full_name: Mapped[str] = mapped_column(Text, nullable=False)
@@ -46,12 +47,20 @@ class User(Base):
     email_config: Mapped[UserEmailConfig | None] = relationship(
         "UserEmailConfig", back_populates="user", uselist=False, cascade="all, delete-orphan"
     )
-    company_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
     uploaded_documents: Mapped[list[Document]] = relationship("Document", back_populates="uploaded_by")
     mail_messages: Mapped[list[MailMessage]] = relationship("MailMessage", back_populates="user")
     company: Mapped[Company] = relationship("Company", back_populates="users")
 
-    __table_args__ = (Index("ix_users_full_name_prefix", "full_name", postgresql_ops={"full_name": "text_pattern_ops"}),)
+    __table_args__ = (
+        # Поиск пользователей в рамках компании
+        Index("ix_users_company_id_is_active", "company_id", "is_active"),  # Активные пользователи компании
+        Index("ix_users_company_id_role", "company_id", "role"),  # Пользователи по роли в компании
+        Index("ix_users_company_id_can_authenticate", "company_id", "can_authenticate"),  # Кто может логиниться в компании
+        Index("ix_users_company_id_last_login", "company_id", "last_login"),  # Сортировка по последнему входу в компании
+        Index("ix_users_company_id_created_at", "company_id", "created_at"),  # Хронология регистрации в компании
+        Index("ix_users_company_id_email", "company_id", "email"),  # Уникальность email в рамках компании
+        Index("ix_users_full_name_prefix", "full_name", postgresql_ops={"full_name": "text_pattern_ops"}),  # Поиск по префиксу имени
+    )
 
 
 class UserEmailConfig(Base):

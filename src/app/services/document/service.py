@@ -20,8 +20,14 @@ class DocumentService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
-    async def create_folder(self, folder_data: FolderCreate, user_id: uuid.UUID, user_role: UserRole) -> Folder:
-        db_folder = Folder(**folder_data.model_dump(), created_by_id=user_id)
+    async def _get_company_id_by_case(self, case_id: uuid.UUID) -> uuid.UUID | None:
+        """Вспомогательный метод для получения company_id из кейса"""
+        res = await self.db.execute(select(Case.id, Case.company_id).where(Case.id == case_id))
+        case = res.first()
+        return case.company_id if case else None
+
+    async def create_folder(self, folder_data: FolderCreate, user_id: uuid.UUID, company_id: uuid.UUID) -> Folder:
+        db_folder = Folder(**folder_data.model_dump(), created_by_id=user_id, company_id=company_id)
         self.db.add(db_folder)
         await self.db.commit()
         await self.db.refresh(db_folder)
@@ -38,9 +44,10 @@ class DocumentService:
         offset: int = 0,
         user_id: uuid.UUID | None = None,
         user_role: UserRole | None = None,
+        company_id: uuid.UUID | None = None,
     ) -> list[FileSystemEntry]:
-        folder_stmt = select(Folder).options(selectinload(Folder.creator))
-        doc_stmt = select(Document).options(selectinload(Document.uploaded_by))
+        folder_stmt = select(Folder).options(selectinload(Folder.creator)).where(Folder.company_id == company_id)
+        doc_stmt = select(Document).options(selectinload(Document.uploaded_by)).where(Document.company_id == company_id)
 
         if not search:
             folder_stmt = folder_stmt.where(Folder.parent_id == folder_id)
@@ -58,21 +65,19 @@ class DocumentService:
             doc_stmt = doc_stmt.join(Case, Document.case_id == Case.id).where(Case.assigned_user_id == user_id)
 
         sort_func = desc if order == "desc" else asc
-
         f_sort_col = getattr(Folder, sort_by if hasattr(Folder, sort_by) else "created_at")
         d_sort_col = getattr(Document, sort_by if hasattr(Document, sort_by) else "created_at")
 
-        folder_stmt = folder_stmt.order_by(sort_func(f_sort_col))
-        doc_stmt = doc_stmt.order_by(sort_func(d_sort_col))
+        folder_stmt = folder_stmt.order_by(sort_func(f_sort_col)).limit(limit).offset(offset)
+        doc_stmt = doc_stmt.order_by(sort_func(d_sort_col)).limit(limit).offset(offset)
 
-        folders_result = await self.db.execute(folder_stmt.limit(limit).offset(offset))
-        documents_result = await self.db.execute(doc_stmt.limit(limit).offset(offset))
+        folders_result = await self.db.execute(folder_stmt)
+        documents_result = await self.db.execute(doc_stmt)
 
         folders = folders_result.scalars().all()
         documents = documents_result.scalars().all()
 
         result: list[FileSystemEntry] = []
-
         for folder in folders:
             result.append(
                 FileSystemEntry(
@@ -85,7 +90,6 @@ class DocumentService:
                     parent_id=folder.parent_id,
                 )
             )
-
         for document in documents:
             result.append(
                 FileSystemEntry(
@@ -104,22 +108,18 @@ class DocumentService:
         reverse = order == "desc"
 
         def sort_key(x: FileSystemEntry) -> str | int | datetime:
-            attr_name: str = sort_by if hasattr(x, sort_by) else "created_at"
+            attr_name = sort_by if hasattr(x, sort_by) else "created_at"
             val = getattr(x, attr_name)
-
-            if val is None:
-                return 0 if sort_by == "size" else ""
-
-            return val  # type: ignore[no-any-return]
+            return 0 if val is None and sort_by == "size" else (val or "")
 
         result.sort(key=sort_key, reverse=reverse)
-
         return result
 
     async def upload_document(
         self,
         file: UploadFile,
         user_id: uuid.UUID,
+        company_id: uuid.UUID,
         case_id: uuid.UUID | None = None,
         folder_id: uuid.UUID | None = None,
         title: str | None = None,
@@ -135,11 +135,18 @@ class DocumentService:
         )
 
         final_title = title
-        if title:
-            if file_ext and not title.lower().endswith(file_ext.lower()):
-                final_title = f"{title}{file_ext}"
-        else:
+        if title and file_ext and not title.lower().endswith(file_ext.lower()):
+            final_title = f"{title}{file_ext}"
+        elif not title:
             final_title = file.filename or "Untitled"
+
+        target_company_id = company_id
+        if case_id:
+            case_company = await self._get_company_id_by_case(case_id)
+            if case_company:
+                target_company_id = case_company
+            else:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Указанное дело не найдено")
 
         db_doc = Document(
             case_id=case_id,
@@ -151,6 +158,7 @@ class DocumentService:
             mime_type=file.content_type or "application/octet-stream",
             file_extension=file_ext,
             uploaded_by_id=user_id,
+            company_id=target_company_id,
         )
         self.db.add(db_doc)
         await self.db.commit()
@@ -160,139 +168,158 @@ class DocumentService:
     async def get_presigned_url(
         self,
         doc_id: uuid.UUID,
+        company_id: uuid.UUID,
         download: bool = False,
     ) -> str | None:
-        res = await self.db.execute(select(Document).where(Document.id == doc_id))
+        res = await self.db.execute(select(Document).where(Document.id == doc_id, Document.company_id == company_id))
         doc = res.scalar_one_or_none()
-
         if not doc:
             return None
+        return await s3_storage.get_presigned_url(
+            object_key=doc.file_path,
+            original_filename=doc.original_filename,
+            download=download,
+        )
 
-        return await s3_storage.get_presigned_url(object_key=doc.file_path, original_filename=doc.original_filename, download=download)
-
-    async def delete_document(self, doc_id: uuid.UUID) -> bool:
-        res = await self.db.execute(select(Document).where(Document.id == doc_id))
+    async def delete_document(self, doc_id: uuid.UUID, company_id: uuid.UUID) -> bool:
+        res = await self.db.execute(select(Document).where(Document.id == doc_id, Document.company_id == company_id))
         doc = res.scalar_one_or_none()
         if not doc:
             return False
-
         await s3_storage.delete_file(doc.file_path)
         await self.db.delete(doc)
         await self.db.commit()
         return True
 
     async def add_folder_to_zip(
-        self, zip_file: zipfile.ZipFile, folder_id: uuid.UUID, path_prefix: str, user_id: uuid.UUID, user_role: UserRole
+        self,
+        zip_file: zipfile.ZipFile,
+        folder_id: uuid.UUID,
+        path_prefix: str,
+        user_id: uuid.UUID,
+        user_role: UserRole,
+        company_id: uuid.UUID,
     ) -> None:
-        """
-        Рекурсивно добавляет содержимое папки в ZIP-архив
-        """
-        # Получаем все папки и документы в текущей папке
-        folders_query = select(Folder).where(Folder.parent_id == folder_id)
-        documents_query = select(Document).where(Document.folder_id == folder_id)
+        folders_query = select(Folder).where(Folder.parent_id == folder_id, Folder.company_id == company_id)
+        documents_query = select(Document).where(Document.folder_id == folder_id, Document.company_id == company_id)
 
         folders_result = await self.db.execute(folders_query)
         documents_result = await self.db.execute(documents_query)
-
         folders = folders_result.scalars().all()
         documents = documents_result.scalars().all()
 
         for doc in documents:
-            if await self._check_document_access(doc, user_id, user_role):
+            if await self._check_document_access(doc, user_id, user_role, company_id):
                 file_content = await s3_storage.get_file_content(doc.file_path)
-
                 zip_path = f"{path_prefix}{doc.title}" if path_prefix else doc.title
                 zip_file.writestr(zip_path, file_content)
 
         for folder in folders:
-            if await self._check_folder_access(folder, user_id, user_role):
+            if await self._check_folder_access(folder, user_id, user_role, company_id):
                 subfolder_path = f"{path_prefix}{folder.name}/" if path_prefix else f"{folder.name}/"
-
                 zip_file.writestr(subfolder_path, "")
-
-                await self.add_folder_to_zip(zip_file, folder.id, subfolder_path, user_id, user_role)
+                await self.add_folder_to_zip(
+                    zip_file,
+                    folder.id,
+                    subfolder_path,
+                    user_id,
+                    user_role,
+                    company_id,
+                )
 
     async def update_document(
-        self, document_id: uuid.UUID, update_data: dict[str, Any], user_id: uuid.UUID, user_role: UserRole
+        self,
+        document_id: uuid.UUID,
+        update_data: dict[str, Any],
+        user_id: uuid.UUID,
+        user_role: UserRole,
+        company_id: uuid.UUID,
     ) -> Document | None:
-        """
-        Обновляет документ с проверкой прав доступа
-        """
         res = await self.db.execute(
-            select(Document).where(Document.id == document_id).options(selectinload(Document.folder), selectinload(Document.case))
+            select(Document)
+            .where(Document.id == document_id, Document.company_id == company_id)
+            .options(selectinload(Document.folder), selectinload(Document.case))
         )
         doc = res.scalar_one_or_none()
-
         if not doc:
             return None
 
-        if not await self._check_document_access(doc, user_id, user_role):
+        if not await self._check_document_access(doc, user_id, user_role, company_id):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет прав для обновления этого документа")
 
         if "title" in update_data and update_data["title"]:
             doc.title = update_data["title"]
 
         if "case_id" in update_data:
-            doc.case_id = update_data["case_id"]
+            new_case_id = update_data["case_id"]
+            if new_case_id:
+                new_case_res = await self.db.execute(select(Case).where(Case.id == new_case_id, Case.company_id == company_id))
+                if not new_case_res.scalar_one_or_none():
+                    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нельзя переместить документ в кейс другой компании")
+                doc.case_id = new_case_id
 
         if "folder_id" in update_data:
-            if update_data["folder_id"]:
-                folder_res = await self.db.execute(select(Folder).where(Folder.id == update_data["folder_id"]))
+            new_folder_id = update_data["folder_id"]
+
+            if new_folder_id is not None:
+                folder_res = await self.db.execute(select(Folder).where(Folder.id == new_folder_id, Folder.company_id == company_id))
                 folder = folder_res.scalar_one_or_none()
                 if not folder:
                     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Целевая папка не найдена")
+                if await self._is_descendant_folder(doc.id, new_folder_id):
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Нельзя переместить документ в дочернюю папку")
 
-            if update_data["folder_id"] and await self._is_descendant_folder(doc.id, update_data["folder_id"]):
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Нельзя переместить документ в дочернюю папку")
-
-            doc.folder_id = update_data["folder_id"]
+            doc.folder_id = new_folder_id
 
         doc.updated_at = datetime.now()
-
         await self.db.commit()
         await self.db.refresh(doc)
         return doc
 
-    async def update_folder(self, folder_id: uuid.UUID, update_data: dict[str, Any], user_id: uuid.UUID, user_role: UserRole) -> Folder | None:
-        """
-        Обновляет папку с проверкой прав доступа и цикличности
-        """
+    async def update_folder(
+        self,
+        folder_id: uuid.UUID,
+        update_data: dict[str, Any],
+        user_id: uuid.UUID,
+        user_role: UserRole,
+        company_id: uuid.UUID,
+    ) -> Folder | None:
         res = await self.db.execute(
-            select(Folder).where(Folder.id == folder_id).options(selectinload(Folder.parent), selectinload(Folder.subfolders))
+            select(Folder)
+            .where(Folder.id == folder_id, Folder.company_id == company_id)
+            .options(selectinload(Folder.parent), selectinload(Folder.subfolders))
         )
         folder = res.scalar_one_or_none()
-
         if not folder:
             return None
 
-        if not await self._check_folder_access(folder, user_id, user_role):
+        if not await self._check_folder_access(folder, user_id, user_role, company_id):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет прав для обновления этой папки")
 
         if "name" in update_data and update_data["name"]:
             folder.name = update_data["name"]
 
         if "case_id" in update_data:
-            folder.case_id = update_data["case_id"]
+            new_case_id = update_data["case_id"]
+            if new_case_id:
+                new_case_res = await self.db.execute(select(Case).where(Case.id == new_case_id, Case.company_id == company_id))
+                if not new_case_res.scalar_one_or_none():
+                    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нельзя переместить папку в кейс другой компании")
+                folder.case_id = new_case_id
 
         if "parent_id" in update_data:
             new_parent_id = update_data["parent_id"]
-
             if new_parent_id == folder_id:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Нельзя переместить папку в саму себя")
-
             if new_parent_id and await self._is_descendant_folder(new_parent_id, folder_id):
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Нельзя переместить папку в дочернюю папку")
-
             if new_parent_id:
-                parent_res = await self.db.execute(select(Folder).where(Folder.id == new_parent_id))
-                parent = parent_res.scalar_one_or_none()
-                if not parent:
+                parent_res = await self.db.execute(select(Folder).where(Folder.id == new_parent_id, Folder.company_id == company_id))
+                if not parent_res.scalar_one_or_none():
                     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Родительская папка не найдена")
-
             folder.parent_id = new_parent_id
 
         folder.updated_at = datetime.now()
-
         await self.db.commit()
         await self.db.refresh(folder)
         return folder
@@ -301,33 +328,34 @@ class DocumentService:
         """
         Проверяет, является ли папка с folder_id дочерней (или вложенной) для potential_parent_id
         """
-
         current_id = folder_id
         visited = set()
-
         while current_id:
             if current_id in visited:
                 break
-
             visited.add(current_id)
-
             res = await self.db.execute(select(Folder.parent_id).where(Folder.id == current_id))
             parent = res.scalar_one_or_none()
-
             if not parent:
                 break
-
             if parent == potential_parent_id:
                 return True
-
             current_id = parent
-
         return False
 
-    async def _check_document_access(self, document: Document, user_id: uuid.UUID, user_role: UserRole) -> bool:
+    async def _check_document_access(
+        self,
+        document: Document,
+        user_id: uuid.UUID,
+        user_role: UserRole,
+        company_id: uuid.UUID,
+    ) -> bool:
         """
         Проверяет права доступа к документу
         """
+        if document.company_id != company_id:
+            return False
+
         if user_role in [UserRole.ADMIN, UserRole.CEO, UserRole.ACCOUNTANT]:
             return True
 
@@ -336,10 +364,19 @@ class DocumentService:
 
         return False
 
-    async def _check_folder_access(self, folder: Folder, user_id: uuid.UUID, user_role: UserRole) -> bool:
+    async def _check_folder_access(
+        self,
+        folder: Folder,
+        user_id: uuid.UUID,
+        user_role: UserRole,
+        company_id: uuid.UUID,
+    ) -> bool:
         """
         Проверяет права доступа к папке
         """
+        if folder.company_id != company_id:
+            return False
+
         if user_role in [UserRole.ADMIN, UserRole.CEO, UserRole.ACCOUNTANT]:
             return True
 

@@ -3,12 +3,11 @@ from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text, func
+from sqlalchemy import UUID, Boolean, DateTime, ForeignKey, Index, String, Text, func
 from sqlalchemy import Enum as SQLEnum
-from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from src.app.core.database.base import Base
+from src.app.core.database.base import TenantBase
 
 if TYPE_CHECKING:
     from src.app.services.case import Case
@@ -27,31 +26,38 @@ class ContactType(str, Enum):
     individual = "individual"
 
 
-class Client(Base):
+class Client(TenantBase):
     __tablename__ = "clients"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)  # Уникальный идентификатор клиента
     company_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True)
+
     name: Mapped[str] = mapped_column(Text, nullable=False, index=True)  # Полное наименование клиента
-    short_name: Mapped[str | None] = mapped_column(Text)  # Сокращённое наименование клиента
-    type: Mapped[ClientType] = mapped_column(SQLEnum(ClientType, native_enum=False), nullable=False)  # Тип клиента (физ/юр лицо/суд)
+    short_name: Mapped[str | None] = mapped_column(Text, index=True)
+    type: Mapped[ClientType] = mapped_column(SQLEnum(ClientType, native_enum=False), nullable=False, index=True)
     inn: Mapped[str | None] = mapped_column(String(12), unique=True, index=True)  # ИНН клиента
-    email: Mapped[str | None] = mapped_column(String(255))  # Email клиента
-    phone: Mapped[str | None] = mapped_column(String(50))  # Телефон клиента
+    email: Mapped[str | None] = mapped_column(String(255), index=True)
+    phone: Mapped[str | None] = mapped_column(String(50), index=True)
     legal_address: Mapped[str | None] = mapped_column(Text)  # Юридический адрес
     actual_address: Mapped[str | None] = mapped_column(Text)  # Фактический адрес
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())  # Дата создания
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())  # Дата обновления
     contacts: Mapped[list[Contact]] = relationship("Contact", back_populates="client", cascade="all, delete-orphan")  # Контакты клиента
     cases: Mapped[list[Case]] = relationship("Case", back_populates="client")  # Список дел клиента
     company: Mapped[Company] = relationship("Company", back_populates="clients")
+
     __table_args__ = (
-        Index("ix_clients_name_prefix", "name", postgresql_ops={"name": "text_pattern_ops"}),
-        Index("ix_clients_short_name_prefix", "short_name", postgresql_ops={"short_name": "text_pattern_ops"}),
+        Index("ix_clients_company_id_type", "company_id", "type"),  # Фильтр клиентов по типу в рамках компании
+        Index("ix_clients_company_id_created_at", "company_id", "created_at"),  # Хронология клиентов
+        Index("ix_clients_name_prefix", "name", postgresql_ops={"name": "text_pattern_ops"}),  # Поиск по префиксу имени
+        Index(
+            "ix_clients_short_name_prefix", "short_name", postgresql_ops={"short_name": "text_pattern_ops"}
+        ),  # Поиск по префиксу краткого имени
+        Index("ix_clients_company_id_inn", "company_id", "inn"),  # Уникальность ИНН в рамках компании
     )
 
 
-class Contact(Base):
+class Contact(TenantBase):
     __tablename__ = "contacts"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)  # Уникальный идентификатор контакта

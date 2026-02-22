@@ -9,7 +9,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.core.auth.deps import get_current_user
+from src.app.core.auth.deps import UserContext, get_current_user
 from src.app.core.database.session import get_db
 from src.app.services.document.models import Folder
 from src.app.services.document.schemas import (
@@ -24,7 +24,6 @@ from src.app.services.document.schemas import (
     FolderUpdate,
 )
 from src.app.services.document.service import DocumentService
-from src.app.services.user.models import User
 
 router = APIRouter(prefix="/api/documents", tags=["Documents"])
 
@@ -47,7 +46,7 @@ async def list_assets(
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: UserContext = Depends(get_current_user),
 ) -> list[FileSystemEntry]:
     service = DocumentService(db)
     return await service.get_unified_list(
@@ -60,6 +59,7 @@ async def list_assets(
         offset=offset,
         user_id=current_user.id,
         user_role=current_user.role,
+        company_id=current_user.company_id,
     )
 
 
@@ -72,10 +72,14 @@ async def list_assets(
 async def create_folder(
     folder_data: FolderCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: UserContext = Depends(get_current_user),
 ) -> FolderResponse:
     service = DocumentService(db)
-    result = await service.create_folder(folder_data, current_user.id, current_user.role)
+    result = await service.create_folder(
+        folder_data=folder_data,
+        user_id=current_user.id,
+        company_id=current_user.company_id,
+    )
     return FolderResponse.model_validate(result)
 
 
@@ -91,25 +95,41 @@ async def upload_document(
     folder_id: uuid.UUID | None = Form(None),
     title: str | None = Form(None),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: UserContext = Depends(get_current_user),
 ) -> DocumentResponse:
     service = DocumentService(db)
-    result = await service.upload_document(file=file, user_id=current_user.id, case_id=case_id, folder_id=folder_id, title=title)
+    result = await service.upload_document(
+        file=file,
+        user_id=current_user.id,
+        company_id=current_user.company_id,
+        case_id=case_id,
+        folder_id=folder_id,
+        title=title,
+    )
     return DocumentResponse.model_validate(result)
 
 
-@router.get("/{document_id}/url", summary="Получить ссылку на документ", response_description="Ссылка для просмотра или скачивания документа")
+@router.get(
+    "/{document_id}/url",
+    summary="Получить ссылку на документ",
+    response_description="Ссылка для просмотра или скачивания документа",
+)
 async def get_document_url(
     document_id: uuid.UUID,
     download: bool = Query(default=False, description="Режим скачивания. Если True - файл скачивается, если False - открывается в браузере"),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: UserContext = Depends(get_current_user),
 ) -> DocumentDownloadUrl:
     """
     Получить временную ссылку для доступа к документу.
     """
     service = DocumentService(db)
-    url = await service.get_presigned_url(document_id, download=download)
+    # Проверка company_id выполняется внутри сервиса
+    url = await service.get_presigned_url(
+        doc_id=document_id,
+        company_id=current_user.company_id,
+        download=download,
+    )
     if not url:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Документ не найден")
     return DocumentDownloadUrl(download_url=url)
@@ -119,14 +139,19 @@ async def get_document_url(
 async def download_folder_as_zip(
     folder_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: UserContext = Depends(get_current_user),
 ) -> StreamingResponse:
     """
     Скачивание всей папки как ZIP-архива.
     """
     service = DocumentService(db)
 
-    folder_result = await db.execute(select(Folder).where(Folder.id == folder_id))
+    folder_result = await db.execute(
+        select(Folder).where(
+            Folder.id == folder_id,
+            Folder.company_id == current_user.company_id,
+        )
+    )
     folder = folder_result.scalar_one_or_none()
     if not folder:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Папка не найдена")
@@ -135,7 +160,14 @@ async def download_folder_as_zip(
         buffer = io.BytesIO()
 
         with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-            await service.add_folder_to_zip(zip_file, folder_id, "", current_user.id, current_user.role)
+            await service.add_folder_to_zip(
+                zip_file=zip_file,
+                folder_id=folder_id,
+                path_prefix="",
+                user_id=current_user.id,
+                user_role=current_user.role,
+                company_id=current_user.company_id,
+            )
 
         buffer.seek(0)
         while True:
@@ -145,11 +177,12 @@ async def download_folder_as_zip(
             yield chunk
 
     safe_folder_name = folder.name.replace('"', "").replace("'", "").replace(";", "").replace(",", "")
-
     encoded_filename = urllib.parse.quote(safe_folder_name, safe="")
 
     return StreamingResponse(
-        generate_zip(), media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{encoded_filename}.zip"'}
+        generate_zip(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{encoded_filename}.zip"'},
     )
 
 
@@ -161,10 +194,14 @@ async def download_folder_as_zip(
 async def delete_document(
     document_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: UserContext = Depends(get_current_user),
 ) -> None:
     service = DocumentService(db)
-    success = await service.delete_document(document_id)
+    # Передаем company_id для проверки прав перед удалением
+    success = await service.delete_document(
+        doc_id=document_id,
+        company_id=current_user.company_id,
+    )
     if not success:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Документ не найден")
 
@@ -177,9 +214,12 @@ async def delete_document(
 async def delete_folder(
     folder_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: UserContext = Depends(get_current_user),
 ) -> None:
-    await db.execute(delete(Folder).where(Folder.id == folder_id))
+    delete(Folder).where(
+        Folder.id == folder_id,
+        Folder.company_id == current_user.company_id,
+    )
     await db.commit()
 
 
@@ -191,11 +231,11 @@ async def delete_folder(
 async def update_asset(
     asset_data: AssetUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: UserContext = Depends(get_current_user),
 ) -> DocumentResponse | FolderResponse:
     service = DocumentService(db)
 
-    print(f"Asset  {asset_data}")
+    print(asset_data)
 
     if asset_data.asset_type == EntryType.FILE:
         if not isinstance(asset_data.data, DocumentUpdate):
@@ -203,7 +243,11 @@ async def update_asset(
 
         update_dict = asset_data.data.model_dump(exclude_unset=True)
         document = await service.update_document(
-            document_id=asset_data.asset_id, update_data=update_dict, user_id=current_user.id, user_role=current_user.role
+            document_id=asset_data.asset_id,
+            update_data=update_dict,
+            user_id=current_user.id,
+            user_role=current_user.role,
+            company_id=current_user.company_id,
         )
 
         if not document:
@@ -217,7 +261,11 @@ async def update_asset(
 
         update_dict = asset_data.data.model_dump(exclude_unset=True)
         folder = await service.update_folder(
-            folder_id=asset_data.asset_id, update_data=update_dict, user_id=current_user.id, user_role=current_user.role
+            folder_id=asset_data.asset_id,
+            update_data=update_dict,
+            user_id=current_user.id,
+            user_role=current_user.role,
+            company_id=current_user.company_id,
         )
 
         if not folder:

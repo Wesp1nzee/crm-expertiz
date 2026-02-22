@@ -11,7 +11,7 @@ class SessionManager:
     def __init__(self, redis: Redis) -> None:
         self.redis = redis
         self.session_prefix = "session:"
-        self.expire_seconds = 60 * 60 * 24 * 7  # 1 неделя
+        self.expire_seconds = 604_800  # 1 неделя
 
     async def create_session(self, user: User) -> str:
         session_id = secrets.token_urlsafe(32)

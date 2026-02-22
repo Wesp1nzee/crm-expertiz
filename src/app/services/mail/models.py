@@ -3,9 +3,8 @@ from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Index, String, Text, func, text
+from sqlalchemy import UUID, BigInteger, Boolean, DateTime, ForeignKey, Index, String, Text, func, text
 from sqlalchemy import Enum as SQLEnum
-from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.app.core.database.base import Base
