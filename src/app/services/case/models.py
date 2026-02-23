@@ -12,7 +12,7 @@ from src.app.core.database.base import TenantBase
 
 if TYPE_CHECKING:
     from src.app.services.client import Client
-    from src.app.services.document import Document
+    from src.app.services.document import Document, Folder
     from src.app.services.mail import MailMessage
     from src.app.services.user import User
 
@@ -30,12 +30,10 @@ class CaseStatus(str, Enum):
 class Case(TenantBase):
     __tablename__ = "cases"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)  # Уникальный идентификатор дела
-
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     client_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("clients.id", ondelete="CASCADE"), nullable=False, index=True)
-
-    number: Mapped[str] = mapped_column(String(50), nullable=False, unique=True, index=True)  # Номер дела (уникальный)
-    case_number: Mapped[str] = mapped_column(String(100), nullable=False, unique=True, index=True)  # Номер производства (уникальный)
+    number: Mapped[str] = mapped_column(String(50), nullable=False, unique=True, index=True)
+    case_number: Mapped[str] = mapped_column(String(100), nullable=False, unique=True, index=True)
     authority: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     case_type: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     object_type: Mapped[str] = mapped_column(Text, nullable=False, index=True)
@@ -45,40 +43,46 @@ class Case(TenantBase):
         nullable=False,
         default=CaseStatus.in_work,
         index=True,
-    )  # Статус дела
-
-    assigned_user_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
-    )  # ID назначенного эксперта
-
-    start_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)  # Добавил индекс для фильтра по дате начала
-    deadline: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)  # Крайний срок
-    completion_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)  # Добавил индекс для фильтра по дате завершения
-    cost: Mapped[Decimal] = mapped_column(Numeric(precision=12, scale=2, asdecimal=True), nullable=False)  # Общая стоимость
-    bank_transfer_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), server_default="0.00", default=Decimal("0.00"))  # Перевод на счёт
-    cash_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), server_default="0.00", default=Decimal("0.00"))  # Наличные
-    remaining_debt: Mapped[Decimal] = mapped_column(Numeric(12, 2), server_default="0.00", default=Decimal("0.00"))  # Оставшийся долг
-    plaintiff: Mapped[str | None] = mapped_column(Text, index=True)  # истец
-    defendant: Mapped[str | None] = mapped_column(Text, index=True)  # ответчик
-    judge_name: Mapped[str | None] = mapped_column(Text, index=True)  # Имя судьи
-    expert_painting: Mapped[str | None] = mapped_column(Text)  # Экспертная оценка/обследование
-    archive_status: Mapped[str | None] = mapped_column(Text)  # Мб потом будет ссылка
-    remarks: Mapped[str | None] = mapped_column(Text)  # Примечания
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)  # Добавил индекс для сортировки
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())  # Дата обновления
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)  # Дата логического удаления
-
+    )
+    assigned_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    start_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    deadline: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    completion_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    cost: Mapped[Decimal] = mapped_column(Numeric(precision=12, scale=2, asdecimal=True), nullable=False)
+    bank_transfer_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), server_default="0.00", default=Decimal("0.00"))
+    cash_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), server_default="0.00", default=Decimal("0.00"))
+    remaining_debt: Mapped[Decimal] = mapped_column(Numeric(12, 2), server_default="0.00", default=Decimal("0.00"))
+    plaintiff: Mapped[str | None] = mapped_column(Text, index=True)
+    defendant: Mapped[str | None] = mapped_column(Text, index=True)
+    judge_name: Mapped[str | None] = mapped_column(Text, index=True)
+    expert_painting: Mapped[str | None] = mapped_column(Text)
+    archive_status: Mapped[str | None] = mapped_column(Text)
+    remarks: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     client: Mapped[Client] = relationship("Client", back_populates="cases")
     assigned_user: Mapped[User | None] = relationship("User", back_populates="cases")
     documents: Mapped[list[Document]] = relationship("Document", back_populates="case", cascade="all, delete-orphan")
     mail_messages: Mapped[list[MailMessage]] = relationship("MailMessage", back_populates="case")
 
+    root_folder_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("folders.id", ondelete="SET NULL"), nullable=True, index=True, unique=True
+    )
+
+    root_folder: Mapped[Folder | None] = relationship(
+        "Folder",
+        back_populates="case_root",
+        primaryjoin="Case.root_folder_id == Folder.id",
+        foreign_keys=[root_folder_id],
+    )
+
     __table_args__ = (
-        Index("ix_cases_company_id_client_id", "company_id", "client_id"),  # Дела клиента в рамках компании
-        Index("ix_cases_company_id_status", "company_id", "status"),  # Фильтр по статусу в рамках компании
-        Index("ix_cases_company_id_assigned_user_id_status", "company_id", "assigned_user_id", "status"),  # Рабочая очередь эксперта
-        Index("ix_cases_company_id_deadline", "company_id", "deadline"),  # Контроль сроков в рамках компании
-        Index("ix_cases_company_id_created_at", "company_id", "created_at"),  # Хронология дел
-        Index("ix_cases_number_btree", "number"),  # Поиск по номеру дела
-        Index("ix_cases_case_number_btree", "case_number"),  # Поиск по номеру производства
+        Index("ix_cases_company_id_client_id", "company_id", "client_id"),
+        Index("ix_cases_company_id_status", "company_id", "status"),
+        Index("ix_cases_company_id_assigned_user_id_status", "company_id", "assigned_user_id", "status"),
+        Index("ix_cases_company_id_deadline", "company_id", "deadline"),
+        Index("ix_cases_company_id_created_at", "company_id", "created_at"),
+        Index("ix_cases_number_btree", "number"),
+        Index("ix_cases_case_number_btree", "case_number"),
     )

@@ -124,7 +124,6 @@ async def get_document_url(
     Получить временную ссылку для доступа к документу.
     """
     service = DocumentService(db)
-    # Проверка company_id выполняется внутри сервиса
     url = await service.get_presigned_url(
         doc_id=document_id,
         company_id=current_user.company_id,
@@ -197,7 +196,7 @@ async def delete_document(
     current_user: UserContext = Depends(get_current_user),
 ) -> None:
     service = DocumentService(db)
-    # Передаем company_id для проверки прав перед удалением
+
     success = await service.delete_document(
         doc_id=document_id,
         company_id=current_user.company_id,
@@ -234,8 +233,6 @@ async def update_asset(
     current_user: UserContext = Depends(get_current_user),
 ) -> DocumentResponse | FolderResponse:
     service = DocumentService(db)
-
-    print(asset_data)
 
     if asset_data.asset_type == EntryType.FILE:
         if not isinstance(asset_data.data, DocumentUpdate):

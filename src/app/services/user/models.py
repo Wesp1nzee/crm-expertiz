@@ -13,7 +13,7 @@ from src.app.core.database.base import Base, TenantBase
 if TYPE_CHECKING:
     from src.app.services.case import Case
     from src.app.services.company import Company
-    from src.app.services.document import Document
+    from src.app.services.document import Document, Folder
     from src.app.services.mail import MailMessage
 
 
@@ -50,7 +50,7 @@ class User(TenantBase):
     uploaded_documents: Mapped[list[Document]] = relationship("Document", back_populates="uploaded_by")
     mail_messages: Mapped[list[MailMessage]] = relationship("MailMessage", back_populates="user")
     company: Mapped[Company] = relationship("Company", back_populates="users")
-
+    created_folders: Mapped[list[Folder]] = relationship("Folder", back_populates="creator")
     __table_args__ = (
         # Поиск пользователей в рамках компании
         Index("ix_users_company_id_is_active", "company_id", "is_active"),  # Активные пользователи компании

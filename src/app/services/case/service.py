@@ -23,6 +23,7 @@ from src.app.services.case.schemas import (
     DocumentResponse,
     EfficiencyMetrics,
     FinancialSummaryResponse,
+    FolderResponse,
     GetCasesQuery,
     GetCasesResponse,
     MailMessageResponse,
@@ -32,7 +33,7 @@ from src.app.services.case.schemas import (
     UserResponse,
 )
 from src.app.services.client.models import Client
-from src.app.services.document.models import Document
+from src.app.services.document.models import Document, Folder
 from src.app.services.user.models import User, UserRole
 
 
@@ -103,7 +104,9 @@ class CaseService:
         )
 
     async def create_case(self, case_data: CaseCreateRequest, user_id: UUID, user_role: UserRole, company_id: UUID) -> CaseResponse:
-        """Создает новое дело"""
+        """
+        Создает новое дело и автоматически создает для него корневую папку в сервисе документов.
+        """
         if user_role == UserRole.EXPERT:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Эксперт не может создавать новые дела")
 
@@ -145,7 +148,6 @@ class CaseService:
         total_payments = data.get("bank_transfer_amount", Decimal("0")) + data.get("cash_amount", Decimal("0"))
         if total_payments > data.get("cost", Decimal("0")):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Сумма платежей не может превышать общую стоимость дела")
-
         data["remaining_debt"] = data["cost"] - total_payments
 
         if data.get("assigned_user_id") == "":
@@ -154,13 +156,24 @@ class CaseService:
         try:
             case = Case(**data)
             self.db.add(case)
+
+            await self.db.flush()
+            root_folder = Folder(name=f"Дело №{case.number}", case_id=case.id, company_id=company_id, created_by_id=user_id, parent_id=None)
+            self.db.add(root_folder)
+
+            await self.db.flush()
+
+            case.root_folder_id = root_folder.id
+
             await self.db.commit()
             await self.db.refresh(case)
+
             return CaseResponse.model_validate(case)
+
         except Exception as db_error:
             await self.db.rollback()
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Ошибка при сохранении дела в базе данных"
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Ошибка при сохранении дела и структуры документов"
             ) from db_error
 
     async def get_case_details(
@@ -169,8 +182,9 @@ class CaseService:
         user_id: UUID,
         user_role: str,
         company_id: UUID,
-    ) -> CaseDetailsResponse | None:
+    ) -> CaseDetailsResponse:
         case_uuid = UUID(case_id) if isinstance(case_id, str) else case_id
+
         stmt = (
             select(Case)
             .options(
@@ -180,17 +194,27 @@ class CaseService:
                 selectinload(Case.documents).selectinload(Document.uploaded_by),
                 selectinload(Case.mail_messages),
             )
-            .where(Case.id == case_uuid, Case.company_id == company_id)  # Фильтр компании
+            .where(Case.id == case_uuid, Case.company_id == company_id)
         )
 
-        if user_role not in {"admin", "ceo", "accountant"}:
+        if user_role == UserRole.EXPERT:
             stmt = stmt.where(Case.assigned_user_id == user_id)
 
         try:
             result = await self.db.execute(stmt)
             case = result.scalar_one()
-        except NoResultFound:
-            return None
+        except NoResultFound as err:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Дело не найдено") from err
+
+        folders_stmt = (
+            select(Folder)
+            .options(selectinload(Folder.creator))
+            .where(Folder.case_id == case_uuid, Folder.company_id == company_id, Folder.id != case.root_folder_id)
+            .order_by(Folder.created_at.asc())
+        )
+
+        folders_result = await self.db.execute(folders_stmt)
+        folders = folders_result.scalars().all()
 
         return CaseDetailsResponse(
             case=CaseResponse.model_validate(case),
@@ -198,6 +222,7 @@ class CaseService:
             assigned_experts=[UserResponse.model_validate(case.assigned_user)] if case.assigned_user else [],
             documents=[DocumentResponse.model_validate(doc) for doc in case.documents],
             events=[MailMessageResponse.model_validate(msg) for msg in case.mail_messages],
+            folders=[FolderResponse.model_validate(f) for f in folders],
         )
 
     async def update_case(self, case_id: UUID, update_data: CaseUpdateRequest, user_role: UserRole, company_id: UUID) -> CaseResponse | None:
@@ -320,7 +345,6 @@ class CaseService:
                 sort_column = User.full_name
             else:
                 sort_column = getattr(Case, query_params.sort_field.value)
-
             stmt = stmt.order_by(asc(sort_column) if query_params.sort_order == SortOrder.ASC else desc(sort_column))
         else:
             stmt = stmt.order_by(desc(Case.created_at))
@@ -357,7 +381,6 @@ class CaseService:
             .order_by(Case.updated_at.desc())
             .limit(5)
         )
-
         if user_role == UserRole.EXPERT:
             stmt = stmt.where(Case.assigned_user_id == user_id)
 

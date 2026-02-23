@@ -270,6 +270,7 @@ class CaseDetailsResponse(BaseModel):
     assigned_experts: list[UserResponse] = Field(default_factory=list)
     documents: list[DocumentResponse] = Field(default_factory=list)
     events: list[MailMessageResponse] = Field(default_factory=list)
+    folders: list[FolderResponse] = Field(default_factory=list)
 
 
 class CaseSuggestionResponse(BaseModel):

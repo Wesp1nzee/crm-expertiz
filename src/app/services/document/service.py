@@ -20,12 +20,6 @@ class DocumentService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
-    async def _get_company_id_by_case(self, case_id: uuid.UUID) -> uuid.UUID | None:
-        """Вспомогательный метод для получения company_id из кейса"""
-        res = await self.db.execute(select(Case.id, Case.company_id).where(Case.id == case_id))
-        case = res.first()
-        return case.company_id if case else None
-
     async def create_folder(self, folder_data: FolderCreate, user_id: uuid.UUID, company_id: uuid.UUID) -> Folder:
         db_folder = Folder(**folder_data.model_dump(), created_by_id=user_id, company_id=company_id)
         self.db.add(db_folder)
@@ -134,23 +128,29 @@ class DocumentService:
             content_type=file.content_type or "application/octet-stream",
         )
 
-        final_title = title
+        final_title = title if title else file.filename or "Untitled"
         if title and file_ext and not title.lower().endswith(file_ext.lower()):
             final_title = f"{title}{file_ext}"
-        elif not title:
-            final_title = file.filename or "Untitled"
 
-        target_company_id = company_id
+        target_company_id: uuid.UUID = company_id
+        effective_folder_id: uuid.UUID | None = folder_id
+
         if case_id:
-            case_company = await self._get_company_id_by_case(case_id)
-            if case_company:
-                target_company_id = case_company
-            else:
+            result = await self.db.execute(select(Case).where(Case.id == case_id))
+            case = result.scalar_one_or_none()
+
+            if not case:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Указанное дело не найдено")
+
+            if case.company_id:
+                target_company_id = case.company_id
+
+            if effective_folder_id is None:
+                effective_folder_id = case.root_folder_id
 
         db_doc = Document(
             case_id=case_id,
-            folder_id=folder_id,
+            folder_id=effective_folder_id,
             title=final_title,
             original_filename=file.filename or "unknown",
             file_path=s3_key,
@@ -160,6 +160,7 @@ class DocumentService:
             uploaded_by_id=user_id,
             company_id=target_company_id,
         )
+
         self.db.add(db_doc)
         await self.db.commit()
         await self.db.refresh(db_doc)

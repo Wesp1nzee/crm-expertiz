@@ -105,8 +105,6 @@ async def get_case_details(
 ) -> CaseDetailsResponse:
     service = CaseService(db)
     details = await service.get_case_details(str(case_id), current_user.id, current_user.role, current_user.company_id)
-    if not details:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Дело не найдено")
     return details
 
 
