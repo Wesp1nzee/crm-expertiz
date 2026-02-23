@@ -17,7 +17,7 @@ router = APIRouter(prefix="/api/users", tags=["Users & Auth"])
 
 @router.get("/suggest", response_model=list[SearchResultDTO])
 async def suggest_users(
-    q: str = Query(..., min_length=2), db: AsyncSession = Depends(get_db), current_user: UserContext = Depends(get_current_user)
+    q: str = Query(..., min_length=1), db: AsyncSession = Depends(get_db), current_user: UserContext = Depends(get_current_user)
 ) -> list[SearchResultDTO]:
     service = UserService(db)
     results = await service.search_name(q, current_user.company_id)

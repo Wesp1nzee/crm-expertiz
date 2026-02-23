@@ -45,7 +45,6 @@ class CaseService:
         month_ago = now - timedelta(days=30)
         two_months_ago = now - timedelta(days=60)
 
-        # Фильтрация по компании обязательна
         query = select(Case).where(Case.deleted_at.is_(None), Case.company_id == company_id)
         if user_role == UserRole.EXPERT:
             query = query.where(Case.assigned_user_id == user_id)
@@ -111,7 +110,6 @@ class CaseService:
         if case_data.deadline < case_data.start_date:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Срок выполнения не может быть раньше даты начала")
 
-        # Проверка уникальности номера внутри конкретной компании
         existing_case_query = await self.db.execute(select(Case).where(Case.number == case_data.number, Case.company_id == company_id))
         if existing_case_query.scalar():
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Дело с номером '{case_data.number}' уже существует")
@@ -134,7 +132,7 @@ class CaseService:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Эксперт с ID {case_data.assigned_user_id} не найден")
 
         data = case_data.model_dump()
-        data["company_id"] = company_id  # Установка компании из контекста
+        data["company_id"] = company_id
 
         decimal_fields = ["cost", "bank_transfer_amount", "cash_amount", "remaining_debt"]
         for field in decimal_fields:

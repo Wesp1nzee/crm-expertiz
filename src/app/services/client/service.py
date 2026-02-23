@@ -41,7 +41,7 @@ class ClientService:
             contact = Contact(
                 **contact_data.model_dump(),
                 client=client,
-                company_id=company_id,  # Важно: контакт тоже привязан к компании
+                company_id=company_id,
             )
             self.db.add(contact)
 
@@ -64,14 +64,13 @@ class ClientService:
     async def get_clients(self, filters: ClientFilters, company_id: UUID) -> ClientListResponse:
         """Список клиентов с агрегированной статистикой по делам компании"""
 
-        # Подзапрос теперь фильтруется по компании, чтобы считать дела только внутри тенанта
         case_counts_subq = (
             select(
                 Case.client_id,
                 func.count(Case.id).label("total_cases"),
                 func.sum(case((Case.status == "in_work", 1), else_=0)).label("active_cases"),
             )
-            .where(Case.company_id == company_id)  # Изоляция статистики
+            .where(Case.company_id == company_id)
             .group_by(Case.client_id)
             .subquery()
         )
@@ -94,7 +93,6 @@ class ClientService:
                 )
             )
 
-        # Считаем общее количество для пагинации
         count_stmt = select(func.count()).select_from(stmt.subquery())
         total_count = (await self.db.execute(count_stmt)).scalar() or 0
 
@@ -107,7 +105,6 @@ class ClientService:
         clients_with_counts = []
         for row in rows:
             client_obj = row.Client
-            # Динамически проставляем агрегаты для Pydantic-схемы
             client_obj.active_cases = row.active_cases or 0
             client_obj.total_cases = row.total_cases or 0
             clients_with_counts.append(ClientShortResponse.model_validate(client_obj))

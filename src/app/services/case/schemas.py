@@ -146,6 +146,7 @@ class CaseBase(BaseModel):
     expert_painting: str | None = None
     archive_status: str | None = None
     remarks: str | None = None
+    judge_name: str | None = None
 
 
 class CaseCreateRequest(CaseBase):
@@ -170,9 +171,10 @@ class CaseUpdateRequest(BaseModel):
     cash_amount: Decimal | None = None
     remaining_debt: Decimal | None = None
     completion_date: datetime | None = None
-    assigned_user_id: uuid.UUID | None = None  # renamed from assigned_expert_id for consistency
+    assigned_user_id: uuid.UUID | None = None
     archive_status: str | None = None
     remarks: str | None = None
+    judge_name: str | None = None
 
 
 class CaseResponse(CaseBase):

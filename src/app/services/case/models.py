@@ -60,6 +60,7 @@ class Case(TenantBase):
     remaining_debt: Mapped[Decimal] = mapped_column(Numeric(12, 2), server_default="0.00", default=Decimal("0.00"))  # Оставшийся долг
     plaintiff: Mapped[str | None] = mapped_column(Text, index=True)  # истец
     defendant: Mapped[str | None] = mapped_column(Text, index=True)  # ответчик
+    judge_name: Mapped[str | None] = mapped_column(Text, index=True)  # Имя судьи
     expert_painting: Mapped[str | None] = mapped_column(Text)  # Экспертная оценка/обследование
     archive_status: Mapped[str | None] = mapped_column(Text)  # Мб потом будет ссылка
     remarks: Mapped[str | None] = mapped_column(Text)  # Примечания
