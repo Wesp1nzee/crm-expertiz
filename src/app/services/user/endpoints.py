@@ -27,6 +27,11 @@ async def suggest_users(
 @router.post("/login", response_model=UserRead)
 async def login(credentials: UserLoginSchema, request: Request, response: Response, db: AsyncSession = Depends(get_db)) -> User:
     user_service = UserService(db)
+    user = await user_service.authenticate(credentials)
+
+    if not user or not user.is_active or not user.company.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Неверные учетные данные или доступ запрещен")
+
     redis_client = await get_redis_client()
     session_manager = SessionManager(redis_client)
 
@@ -41,11 +46,6 @@ async def login(credentials: UserLoginSchema, request: Request, response: Respon
 
     elif session_id and not redis_session:
         response.delete_cookie("session_id")
-
-    user = await user_service.authenticate(credentials)
-
-    if not user or not user.can_authenticate:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Неверные учетные данные или доступ запрещен")
 
     new_session_id = await session_manager.create_session(user=user)
     response.set_cookie(key="session_id", value=new_session_id, httponly=True, secure=True, samesite="lax", max_age=604_800)  # Куки на 1 неделю

@@ -7,7 +7,6 @@ from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException, status
 from sqlalchemy import asc, desc, func, select
-from sqlalchemy.exc import NoResultFound
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -178,51 +177,54 @@ class CaseService:
 
     async def get_case_details(
         self,
-        case_id: str,
+        case_id: UUID,
         user_id: UUID,
         user_role: str,
         company_id: UUID,
     ) -> CaseDetailsResponse:
-        case_uuid = UUID(case_id) if isinstance(case_id, str) else case_id
-
         stmt = (
             select(Case)
             .options(
                 selectinload(Case.client).selectinload(Client.contacts),
                 selectinload(Case.assigned_user),
-                selectinload(Case.documents).selectinload(Document.folder),
-                selectinload(Case.documents).selectinload(Document.uploaded_by),
                 selectinload(Case.mail_messages),
             )
-            .where(Case.id == case_uuid, Case.company_id == company_id)
+            .where(Case.id == case_id, Case.company_id == company_id)
         )
 
         if user_role == UserRole.EXPERT:
             stmt = stmt.where(Case.assigned_user_id == user_id)
 
-        try:
-            result = await self.db.execute(stmt)
-            case = result.scalar_one()
-        except NoResultFound as err:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Дело не найдено") from err
+        result = await self.db.execute(stmt)
+        case = result.scalar_one_or_none()
+
+        if not case:
+            raise HTTPException(status_code=404, detail="Дело не найдено")
 
         folders_stmt = (
             select(Folder)
             .options(selectinload(Folder.creator))
-            .where(Folder.case_id == case_uuid, Folder.company_id == company_id, Folder.id != case.root_folder_id)
+            .where(Folder.parent_id == case.root_folder_id, Folder.company_id == company_id)
             .order_by(Folder.created_at.asc())
         )
-
         folders_result = await self.db.execute(folders_stmt)
-        folders = folders_result.scalars().all()
+        subfolders = folders_result.scalars().all()
+
+        documents_stmt = (
+            select(Document)
+            .options(selectinload(Document.uploaded_by), selectinload(Document.folder))
+            .where(Document.folder_id == case.root_folder_id, Document.company_id == company_id)
+        )
+        docs_result = await self.db.execute(documents_stmt)
+        root_documents = docs_result.scalars().all()
 
         return CaseDetailsResponse(
             case=CaseResponse.model_validate(case),
             client=ClientResponse.model_validate(case.client),
             assigned_experts=[UserResponse.model_validate(case.assigned_user)] if case.assigned_user else [],
-            documents=[DocumentResponse.model_validate(doc) for doc in case.documents],
+            documents=[DocumentResponse.model_validate(doc) for doc in root_documents],
             events=[MailMessageResponse.model_validate(msg) for msg in case.mail_messages],
-            folders=[FolderResponse.model_validate(f) for f in folders],
+            folders=[FolderResponse.model_validate(f) for f in subfolders],
         )
 
     async def update_case(self, case_id: UUID, update_data: CaseUpdateRequest, user_role: UserRole, company_id: UUID) -> CaseResponse | None:

@@ -6,7 +6,7 @@ from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.auth.deps import UserContext, get_current_user
@@ -16,6 +16,7 @@ from src.app.services.document.schemas import (
     AssetUpdate,
     DocumentDownloadUrl,
     DocumentResponse,
+    DocumentsBulkDeleteRequest,
     DocumentUpdate,
     EntryType,
     FileSystemEntry,
@@ -215,11 +216,33 @@ async def delete_folder(
     db: AsyncSession = Depends(get_db),
     current_user: UserContext = Depends(get_current_user),
 ) -> None:
-    delete(Folder).where(
-        Folder.id == folder_id,
-        Folder.company_id == current_user.company_id,
+    service = DocumentService(db)
+    await service.delete_folder(
+        folder_id=folder_id,
+        company_id=current_user.company_id,
     )
-    await db.commit()
+
+
+@router.delete(
+    "/bulk",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Массовое удаление файлов и папок",
+    description="Удаляет список документов и папок. При удалении папки удаляются все вложенные объекты.",
+)
+async def delete_documents_bulk(
+    request: DocumentsBulkDeleteRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+) -> None:
+    if not request.folder_ids and not request.document_ids:
+        return
+
+    service = DocumentService(db)
+    await service.delete_bulk(
+        folder_ids=request.folder_ids,
+        document_ids=request.document_ids,
+        company_id=current_user.company_id,
+    )
 
 
 @router.patch(

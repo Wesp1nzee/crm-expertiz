@@ -91,6 +91,7 @@ class FolderResponse(BaseModel):
     id: uuid.UUID
     name: str
     parent_id: uuid.UUID | None = None
+    created_at: datetime
 
 
 class DocumentResponse(BaseModel):

@@ -16,7 +16,6 @@ class SessionManager:
     async def create_session(self, user: User) -> str:
         session_id = secrets.token_urlsafe(32)
         key = f"{self.session_prefix}{session_id}"
-
         user_data = {
             "id": str(user.id),
             "email": user.email,

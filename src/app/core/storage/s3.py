@@ -1,10 +1,11 @@
 import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import IO, Any
 
 from aiobotocore.session import get_session
 from botocore.config import Config
+from botocore.response import StreamingBody
 
 from src.app.core.config import settings
 
@@ -25,6 +26,13 @@ class S3Storage:
         async with self.session.create_client("s3", config=self.s3_config, **self.config) as client:
             yield client
 
+    @asynccontextmanager
+    async def get_file_stream(self, object_key: str) -> AsyncIterator[StreamingBody]:
+        """Возвращает стрим"""
+        async with self.get_client() as client:
+            response = await client.get_object(Bucket=settings.S3_BUCKET_NAME, Key=object_key)
+            yield response["Body"]
+
     async def init_bucket(self) -> None:
         """Создает корзину, если она не существует"""
         async with self.get_client() as client:
@@ -34,12 +42,12 @@ class S3Storage:
                 await client.create_bucket(Bucket=settings.S3_BUCKET_NAME)
                 print(f"Bucket '{settings.S3_BUCKET_NAME}' created successfully.")
 
-    async def upload_file(self, file_data: bytes, object_key: str, content_type: str) -> None:
+    async def upload_file(self, file_obj: IO[bytes] | bytes, object_key: str, content_type: str) -> None:
         async with self.get_client() as client:
             await client.put_object(
                 Bucket=settings.S3_BUCKET_NAME,
                 Key=object_key,
-                Body=file_data,
+                Body=file_obj,
                 ContentType=content_type,
             )
 

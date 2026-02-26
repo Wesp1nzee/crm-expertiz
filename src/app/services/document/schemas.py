@@ -3,7 +3,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Self
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class EntryType(str, Enum):
@@ -14,6 +14,7 @@ class EntryType(str, Enum):
 class FolderBase(BaseModel):
     name: str
     parent_id: uuid.UUID | None = None
+    case_id: uuid.UUID | None = None
 
 
 class FolderCreate(FolderBase):
@@ -36,7 +37,7 @@ class DocumentResponse(BaseModel):
     file_size: int
     file_extension: str
     uploaded_by_id: uuid.UUID | None
-    uploaded_by_name: str | None = None  # ← Добавили имя загрузившего
+    uploaded_by_name: str | None = None
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
@@ -93,3 +94,8 @@ class AssetUpdate(BaseModel):
         if self.asset_type == EntryType.FOLDER and not isinstance(self.data, FolderUpdate):
             raise ValueError("Для типа FOLDER данные должны быть FolderUpdate")
         return self
+
+
+class DocumentsBulkDeleteRequest(BaseModel):
+    folder_ids: list[uuid.UUID] = Field(default_factory=list, max_length=50, description="Список ID папок для удаления")
+    document_ids: list[uuid.UUID] = Field(default_factory=list, max_length=100, description="Список ID документов для удаления")

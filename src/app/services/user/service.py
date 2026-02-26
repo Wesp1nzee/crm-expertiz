@@ -28,14 +28,14 @@ class UserService:
             return None
         return user
 
-    async def set_online_status(self, user_id: UUID, is_online: bool) -> None:
+    async def set_online_status(self, user_id: UUID, can_authenticate: bool) -> None:
         db_user = await self.db.get(User, user_id)
         if not db_user:
             raise HTTPException(status_code=404, detail="Пользователь не найден при попытке обновить статус.")
 
-        db_user.is_active = is_online
+        db_user.can_authenticate = can_authenticate
 
-        if is_online:
+        if can_authenticate:
             db_user.last_login = datetime.now(UTC)
 
         await self.db.commit()

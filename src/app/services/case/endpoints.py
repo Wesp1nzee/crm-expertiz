@@ -104,7 +104,7 @@ async def get_case_details(
     current_user: UserContext = Depends(get_current_user),
 ) -> CaseDetailsResponse:
     service = CaseService(db)
-    details = await service.get_case_details(str(case_id), current_user.id, current_user.role, current_user.company_id)
+    details = await service.get_case_details(case_id, current_user.id, current_user.role, current_user.company_id)
     return details
 
 
