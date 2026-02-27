@@ -97,5 +97,10 @@ class AssetUpdate(BaseModel):
 
 
 class DocumentsBulkDeleteRequest(BaseModel):
-    folder_ids: list[uuid.UUID] = Field(default_factory=list, max_length=50, description="Список ID папок для удаления")
-    document_ids: list[uuid.UUID] = Field(default_factory=list, max_length=100, description="Список ID документов для удаления")
+    folder_ids: list[uuid.UUID] | None = Field(default=None, max_length=50, description="Список ID папок для удаления")
+    document_ids: list[uuid.UUID] | None = Field(default=None, max_length=100, description="Список ID документов для удаления")
+
+
+class BulkDownloadRequest(BaseModel):
+    folder_ids: list[uuid.UUID] | None = Field(default=None, max_length=50, description="Список ID папок для удаления")
+    document_ids: list[uuid.UUID] | None = Field(default=None, max_length=100, description="Список ID документов для удаления")

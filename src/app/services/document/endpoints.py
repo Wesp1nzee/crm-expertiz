@@ -14,6 +14,7 @@ from src.app.core.database.session import get_db
 from src.app.services.document.models import Folder
 from src.app.services.document.schemas import (
     AssetUpdate,
+    BulkDownloadRequest,
     DocumentDownloadUrl,
     DocumentResponse,
     DocumentsBulkDeleteRequest,
@@ -110,29 +111,115 @@ async def upload_document(
     return DocumentResponse.model_validate(result)
 
 
-@router.get(
-    "/{document_id}/url",
-    summary="Получить ссылку на документ",
-    response_description="Ссылка для просмотра или скачивания документа",
+@router.delete(
+    "/bulk",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Массовое удаление файлов и папок",
+    description="Удаляет список документов и папок. При удалении папки удаляются все вложенные объекты.",
 )
-async def get_document_url(
-    document_id: uuid.UUID,
-    download: bool = Query(default=False, description="Режим скачивания. Если True - файл скачивается, если False - открывается в браузере"),
+async def delete_documents_bulk(
+    request: DocumentsBulkDeleteRequest,
     db: AsyncSession = Depends(get_db),
     current_user: UserContext = Depends(get_current_user),
-) -> DocumentDownloadUrl:
-    """
-    Получить временную ссылку для доступа к документу.
-    """
+) -> None:
+    if not request.folder_ids and not request.document_ids:
+        return
+
     service = DocumentService(db)
-    url = await service.get_presigned_url(
-        doc_id=document_id,
+    await service.delete_bulk(
+        folder_ids=request.folder_ids,
+        document_ids=request.document_ids,
         company_id=current_user.company_id,
-        download=download,
     )
-    if not url:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Документ не найден")
-    return DocumentDownloadUrl(download_url=url)
+
+
+@router.post("/download-bulk", summary="Массовое скачивание документов и папок")
+async def download_bulk(
+    request: BulkDownloadRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+) -> StreamingResponse:
+    if not request.folder_ids and not request.document_ids:
+        raise HTTPException(status_code=400, detail="Ничего не выбрано для скачивания")
+
+    service = DocumentService(db)
+
+    async def generate_zip() -> AsyncGenerator[bytes]:
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+            await service.download_bulk_to_zip(
+                zip_file=zip_file,
+                folder_ids=request.folder_ids,
+                document_ids=request.document_ids,
+                user_id=current_user.id,
+                user_role=current_user.role,
+                company_id=current_user.company_id,
+            )
+
+        buffer.seek(0)
+        while chunk := buffer.read(1024 * 64):
+            yield chunk
+        buffer.close()
+
+    filename = urllib.parse.quote(f"export_{uuid.uuid4().hex[:8]}.zip")
+
+    return StreamingResponse(
+        generate_zip(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.patch(
+    "/update",
+    summary="Обновить файл или папку",
+    description="Единый эндпоинт для обновления документов и папок. Можно изменить имя, переместить в другую папку или изменить привязку к делу.",
+)
+async def update_asset(
+    asset_data: AssetUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+) -> DocumentResponse | FolderResponse:
+    service = DocumentService(db)
+
+    if asset_data.asset_type == EntryType.FILE:
+        if not isinstance(asset_data.data, DocumentUpdate):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Для файлов данные должны быть типа DocumentUpdate")
+
+        update_dict = asset_data.data.model_dump(exclude_unset=True)
+        document = await service.update_document(
+            document_id=asset_data.asset_id,
+            update_data=update_dict,
+            user_id=current_user.id,
+            user_role=current_user.role,
+            company_id=current_user.company_id,
+        )
+
+        if not document:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Документ не найден")
+
+        return DocumentResponse.model_validate(document)
+
+    else:  # EntryType.FOLDER
+        if not isinstance(asset_data.data, FolderUpdate):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Для папок данные должны быть типа FolderUpdate")
+
+        update_dict = asset_data.data.model_dump(exclude_unset=True)
+        folder = await service.update_folder(
+            folder_id=asset_data.asset_id,
+            update_data=update_dict,
+            user_id=current_user.id,
+            user_role=current_user.role,
+            company_id=current_user.company_id,
+        )
+
+        if not folder:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Папка не найдена",
+            )
+
+        return FolderResponse.model_validate(folder)
 
 
 @router.get("/folders/{folder_id}/download", summary="Скачать папку как ZIP-архив")
@@ -187,6 +274,48 @@ async def download_folder_as_zip(
 
 
 @router.delete(
+    "/folders/{folder_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Удалить папку",
+)
+async def delete_folder(
+    folder_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+) -> None:
+    service = DocumentService(db)
+    await service.delete_folder(
+        folder_id=folder_id,
+        company_id=current_user.company_id,
+    )
+
+
+@router.get(
+    "/{document_id}/url",
+    summary="Получить ссылку на документ",
+    response_description="Ссылка для просмотра или скачивания документа",
+)
+async def get_document_url(
+    document_id: uuid.UUID,
+    download: bool = Query(default=False, description="Режим скачивания. Если True - файл скачивается, если False - открывается в браузере"),
+    db: AsyncSession = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+) -> DocumentDownloadUrl:
+    """
+    Получить временную ссылку для доступа к документу.
+    """
+    service = DocumentService(db)
+    url = await service.get_presigned_url(
+        doc_id=document_id,
+        company_id=current_user.company_id,
+        download=download,
+    )
+    if not url:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Документ не найден")
+    return DocumentDownloadUrl(download_url=url)
+
+
+@router.delete(
     "/{document_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Удалить документ",
@@ -204,94 +333,3 @@ async def delete_document(
     )
     if not success:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Документ не найден")
-
-
-@router.delete(
-    "/folders/{folder_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    summary="Удалить папку",
-)
-async def delete_folder(
-    folder_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db),
-    current_user: UserContext = Depends(get_current_user),
-) -> None:
-    service = DocumentService(db)
-    await service.delete_folder(
-        folder_id=folder_id,
-        company_id=current_user.company_id,
-    )
-
-
-@router.delete(
-    "/bulk",
-    status_code=status.HTTP_204_NO_CONTENT,
-    summary="Массовое удаление файлов и папок",
-    description="Удаляет список документов и папок. При удалении папки удаляются все вложенные объекты.",
-)
-async def delete_documents_bulk(
-    request: DocumentsBulkDeleteRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user: UserContext = Depends(get_current_user),
-) -> None:
-    if not request.folder_ids and not request.document_ids:
-        return
-
-    service = DocumentService(db)
-    await service.delete_bulk(
-        folder_ids=request.folder_ids,
-        document_ids=request.document_ids,
-        company_id=current_user.company_id,
-    )
-
-
-@router.patch(
-    "/update",
-    summary="Обновить файл или папку",
-    description="Единый эндпоинт для обновления документов и папок. Можно изменить имя, переместить в другую папку или изменить привязку к делу.",
-)
-async def update_asset(
-    asset_data: AssetUpdate,
-    db: AsyncSession = Depends(get_db),
-    current_user: UserContext = Depends(get_current_user),
-) -> DocumentResponse | FolderResponse:
-    service = DocumentService(db)
-
-    if asset_data.asset_type == EntryType.FILE:
-        if not isinstance(asset_data.data, DocumentUpdate):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Для файлов данные должны быть типа DocumentUpdate")
-
-        update_dict = asset_data.data.model_dump(exclude_unset=True)
-        document = await service.update_document(
-            document_id=asset_data.asset_id,
-            update_data=update_dict,
-            user_id=current_user.id,
-            user_role=current_user.role,
-            company_id=current_user.company_id,
-        )
-
-        if not document:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Документ не найден")
-
-        return DocumentResponse.model_validate(document)
-
-    else:  # EntryType.FOLDER
-        if not isinstance(asset_data.data, FolderUpdate):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Для папок данные должны быть типа FolderUpdate")
-
-        update_dict = asset_data.data.model_dump(exclude_unset=True)
-        folder = await service.update_folder(
-            folder_id=asset_data.asset_id,
-            update_data=update_dict,
-            user_id=current_user.id,
-            user_role=current_user.role,
-            company_id=current_user.company_id,
-        )
-
-        if not folder:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Папка не найдена",
-            )
-
-        return FolderResponse.model_validate(folder)

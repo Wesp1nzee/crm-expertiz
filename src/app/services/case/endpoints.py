@@ -1,5 +1,7 @@
 import io
 import logging
+import re
+import urllib.parse
 import uuid
 import zipfile
 from collections.abc import AsyncGenerator
@@ -12,7 +14,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.auth.deps import UserContext, get_current_user
 from src.app.core.database.session import get_db
-from src.app.core.storage.s3 import s3_storage
 from src.app.services.case.models import Case
 from src.app.services.case.schemas import (
     CaseCreateRequest,
@@ -25,7 +26,6 @@ from src.app.services.case.schemas import (
     GetCasesResponse,
 )
 from src.app.services.case.service import CaseService
-from src.app.services.document.models import Document
 from src.app.services.document.service import DocumentService
 
 logger = logging.getLogger(__name__)
@@ -42,7 +42,7 @@ async def get_financial_summary(
     return await service.get_financial_summary(current_user.id, current_user.role, current_user.company_id)
 
 
-@router.get("/{case_id}/download-documents")
+@router.get("/{case_id}/download-documents", summary="Скачать все документы дела")
 async def download_case_documents_as_zip(
     case_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -51,24 +51,44 @@ async def download_case_documents_as_zip(
     case_result = await db.execute(select(Case).where(Case.id == case_id, Case.company_id == current_user.company_id))
     case = case_result.scalar_one_or_none()
     if not case:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Дело не найдено")
+        raise HTTPException(status_code=404, detail="Дело не найдено")
+
+    if not case.root_folder_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="У дела отсутствует корневая папка")
+
+    root_id: uuid.UUID = case.root_folder_id
 
     service = DocumentService(db)
 
     async def generate_zip() -> AsyncGenerator[bytes]:
         buffer = io.BytesIO()
-        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-            documents_result = await db.execute(select(Document).where(Document.case_id == case_id))
-            documents = documents_result.scalars().all()
-            for doc in documents:
-                if await service._check_document_access(doc, current_user.id, current_user.role, current_user.company_id):
-                    file_content = await s3_storage.get_file_content(doc.file_path)
-                    zip_file.writestr(doc.title.replace('"', ""), file_content)
-        buffer.seek(0)
-        yield buffer.read()
 
-    filename = f"case_{case.number}_documents.zip"
-    return StreamingResponse(generate_zip(), media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+            await service.add_folder_to_zip(
+                zip_file=zip_file,
+                folder_id=root_id,
+                path_prefix="",
+                user_id=current_user.id,
+                user_role=current_user.role,
+                company_id=current_user.company_id,
+            )
+
+        buffer.seek(0)
+        while True:
+            chunk = buffer.read(1024 * 64)
+            if not chunk:
+                break
+            yield chunk
+        buffer.close()
+
+    safe_case_name = re.sub(r"[^\w\-. ]", "_", f"case_{case.number}")
+    encoded_filename = urllib.parse.quote(safe_case_name)
+
+    return StreamingResponse(
+        generate_zip(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{encoded_filename}.zip"'},
+    )
 
 
 @router.get("/suggest", response_model=list[CaseSuggestionResponse])

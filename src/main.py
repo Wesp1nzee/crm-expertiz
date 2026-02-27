@@ -1,3 +1,5 @@
+import logging
+import sys
 from collections.abc import AsyncIterator, Awaitable
 from contextlib import asynccontextmanager
 from typing import Any, cast
@@ -10,6 +12,7 @@ from src.app.core.database import all_models  # noqa: F401
 from src.app.core.database.session import AsyncSessionLocal, engine
 from src.app.core.redis import get_redis_client
 from src.app.core.storage.s3 import s3_storage
+from src.app.middleware.logging import LoggingMiddleware
 from src.app.services.calendar.endpoints import router as calendar_router
 from src.app.services.case.endpoints import router as cases_router
 from src.app.services.client.endpoints import router as client_router
@@ -17,6 +20,15 @@ from src.app.services.company.endpoints import router as company_router
 from src.app.services.document.endpoints import router as document_router
 from src.app.services.user.endpoints import router as user_router
 from src.app.services.user.setup import create_first_admin
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-8s | %(name)s:%(lineno)d | %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
 
 
 @asynccontextmanager
@@ -70,6 +82,12 @@ app.add_middleware(
     allow_headers=["Content-Type"],
 )
 
+app.add_middleware(
+    LoggingMiddleware,
+    log_request_body=False,
+    log_response_body=False,
+    skip_paths=["/health", "/docs", "/openapi.json", "/redoc"],
+)
 app.include_router(cases_router)
 app.include_router(client_router)
 app.include_router(document_router)

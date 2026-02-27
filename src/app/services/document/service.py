@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException, UploadFile, status
-from sqlalchemy import delete, literal_column, or_, select, text, union_all, update
+from sqlalchemy import CTE, Text, cast, delete, literal_column, or_, select, text, union_all, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.sql import Select
@@ -15,8 +15,8 @@ from sqlalchemy.sql import Select
 from src.app.core.storage.s3 import s3_storage
 from src.app.services.case.models import Case
 from src.app.services.document.models import Document, Folder
-from src.app.services.document.schemas import EntryType, FileSystemEntry, FolderCreate
-from src.app.services.user.models import UserRole
+from src.app.services.document.schemas import FileSystemEntry, FolderCreate
+from src.app.services.user.models import User, UserRole
 
 logger = logging.getLogger(__name__)
 
@@ -332,8 +332,8 @@ class DocumentService:
 
     async def delete_bulk(
         self,
-        folder_ids: list[uuid.UUID],
-        document_ids: list[uuid.UUID],
+        folder_ids: list[uuid.UUID] | None,
+        document_ids: list[uuid.UUID] | None,
         company_id: uuid.UUID,
     ) -> None:
         """Массовое удаление папок со всем содержимым и отдельных документов."""
@@ -407,42 +407,44 @@ class DocumentService:
         folder_id: uuid.UUID,
         path_prefix: str,
         user_id: uuid.UUID,
-        user_role: str,
+        user_role: UserRole,
         company_id: uuid.UUID,
     ) -> None:
         """
         Рекурсивно собирает содержимое папки и добавляет в ZIP с сохранением структуры.
+        Использует потоковую передачу данных из S3
         """
 
-        cte_query = select(Folder.id, Folder.name, Folder.parent_id, Folder.name.label("full_path")).where(
+        cte_base_query = select(Folder.id, Folder.name, Folder.parent_id, cast(Folder.name, Text).label("full_path")).where(
             Folder.id == folder_id, Folder.company_id == company_id
         )
 
-        if user_role == "expert":
-            cte_query = cte_query.where(Folder.created_by_id == user_id)
+        if user_role == UserRole.EXPERT:
+            cte_base_query = cte_base_query.where(Folder.created_by_id == user_id)
 
-        base_cte = cte_query.cte(name="folder_hierarchy", recursive=True)
+        folder_hierarchy_cte: CTE = cte_base_query.cte(name="folder_hierarchy", recursive=True)
 
-        recursive_part = select(Folder.id, Folder.name, Folder.parent_id, (base_cte.c.full_path + "/" + Folder.name).label("full_path")).join(
-            base_cte, Folder.parent_id == base_cte.c.id
-        )
-        if user_role == "expert":
-            recursive_part = recursive_part.where(Folder.created_by_id == user_id)
+        recursive_part = select(
+            Folder.id, Folder.name, Folder.parent_id, (folder_hierarchy_cte.c.full_path + "/" + Folder.name).label("full_path")
+        ).join(folder_hierarchy_cte, Folder.parent_id == folder_hierarchy_cte.c.id)
 
-        folder_tree = base_cte.union_all(recursive_part)
+        folder_tree_union = folder_hierarchy_cte.union_all(recursive_part)
+        folder_tree_subquery: CTE = folder_tree_union.alias("folder_tree")
 
         docs_stmt = (
-            select(Document, folder_tree.c.full_path)
-            .join(folder_tree, Document.folder_id == folder_tree.c.id)
+            select(Document, folder_tree_subquery.c.full_path)
+            .join(folder_tree_subquery, Document.folder_id == folder_tree_subquery.c.id)
             .where(Document.company_id == company_id)
         )
 
-        if user_role == "expert":
+        if user_role == UserRole.EXPERT:
             docs_stmt = docs_stmt.where(Document.uploaded_by_id == user_id)
 
         result = await self.db.execute(docs_stmt)
         rows = result.all()
+
         semaphore = asyncio.Semaphore(5)
+        zip_lock = asyncio.Lock()
 
         async def process_document(doc: Document, folder_path: str) -> None:
             async with semaphore:
@@ -450,15 +452,21 @@ class DocumentService:
                     async with s3_storage.get_file_stream(doc.file_path) as stream:
                         content = await stream.read()
 
-                        zip_entry_path = os.path.join(path_prefix, folder_path, doc.title)
+                    async with zip_lock:
+                        relative_path = folder_path.strip("/")
+                        zip_entry_path = os.path.join(path_prefix, relative_path, doc.title)
 
                         await asyncio.to_thread(zip_file.writestr, zip_entry_path, content)
+
                 except Exception as e:
-                    logger.error(f"Ошибка при добавлении файла {doc.id} в ZIP: {e}")
+                    logger.error("Ошибка при добавлении документа %s (ID: %s) в архив: %s", doc.title, doc.id, str(e))
 
         if rows:
-            tasks = [process_document(row.Document, row.full_path) for row in rows]
+            # row[0] - это Document, row[1] - это full_path из CTE
+            tasks = [process_document(row[0], row[1]) for row in rows]
             await asyncio.gather(*tasks)
+        else:
+            logger.info("Папка %s пуста или доступ запрещен, ZIP будет пустым", folder_id)
 
     async def get_unified_list(
         self,
@@ -477,27 +485,37 @@ class DocumentService:
         target_sort = sort_map.get(sort_by, "created_at")
         direction = "DESC" if order.lower() == "desc" else "ASC"
 
-        f_stmt: Select[Any] = select(
-            Folder.id,
-            Folder.name.label("name"),
-            literal_column("'folder'").label("type"),
-            Folder.created_at,
-            Folder.parent_id,
-            literal_column("0").label("size"),
-            literal_column("NULL").label("extension"),
-            Folder.created_by_id,
-        ).where(Folder.company_id == company_id)
+        f_stmt: Select[Any] = (
+            select(
+                Folder.id,
+                Folder.name.label("name"),
+                literal_column("'folder'").label("type"),
+                Folder.created_at,
+                Folder.parent_id,
+                literal_column("0").label("size"),
+                literal_column("NULL").label("extension"),
+                Folder.created_by_id,
+                User.full_name.label("created_by_name"),
+            )
+            .join(User, Folder.created_by_id == User.id)
+            .where(Folder.company_id == company_id)
+        )
 
-        d_stmt: Select[Any] = select(
-            Document.id,
-            Document.title.label("name"),
-            literal_column("'file'").label("type"),
-            Document.created_at,
-            Document.folder_id.label("parent_id"),
-            Document.file_size.label("size"),
-            Document.file_extension.label("extension"),
-            Document.uploaded_by_id.label("created_by_id"),
-        ).where(Document.company_id == company_id)
+        d_stmt: Select[Any] = (
+            select(
+                Document.id,
+                Document.title.label("name"),
+                literal_column("'file'").label("type"),
+                Document.created_at,
+                Document.folder_id.label("parent_id"),
+                Document.file_size.label("size"),
+                Document.file_extension.label("extension"),
+                Document.uploaded_by_id.label("created_by_id"),
+                User.full_name.label("created_by_name"),
+            )
+            .join(User, Document.uploaded_by_id == User.id)
+            .where(Document.company_id == company_id)
+        )
 
         if user_role == UserRole.EXPERT:
             f_stmt = f_stmt.where(Folder.created_by_id == user_id)
@@ -524,9 +542,10 @@ class DocumentService:
             FileSystemEntry(
                 id=row.id,
                 name=row.name,
-                type=EntryType.FOLDER if row.type == "folder" else EntryType.FILE,
+                type=row.type,
                 created_at=row.created_at,
                 created_by_id=row.created_by_id,
+                created_by_name=row.created_by_name,
                 parent_id=row.parent_id,
                 size=row.size if row.type == "file" else None,
                 extension=row.extension,
@@ -588,8 +607,7 @@ class DocumentService:
         company_id: uuid.UUID,
     ) -> None:
         """
-        FIX #11: рекурсивно обновляет case_id у всех дочерних папок и документов.
-        Использует CTE + массовый UPDATE вместо обхода в Python.
+        рекурсивно обновляет case_id у всех дочерних папок и документов.
         """
         base_cte = (
             select(Folder.id).where(Folder.parent_id == root_folder_id, Folder.company_id == company_id).cte(name="subtree", recursive=True)
@@ -660,3 +678,81 @@ class DocumentService:
         if user_role in [UserRole.ADMIN, UserRole.CEO, UserRole.ACCOUNTANT]:
             return True
         return folder.created_by_id == user_id
+
+    async def download_bulk_to_zip(
+        self,
+        zip_file: zipfile.ZipFile,
+        folder_ids: list[uuid.UUID] | None,
+        document_ids: list[uuid.UUID] | None,
+        user_id: uuid.UUID,
+        user_role: UserRole,
+        company_id: uuid.UUID,
+    ) -> None:
+        """
+        Массовое скачивание папок и документов в один ZIP-архив.
+        """
+        semaphore = asyncio.Semaphore(5)
+        zip_lock = asyncio.Lock()
+
+        tasks = []
+
+        if folder_ids:
+            folder_base = select(Folder.id, Folder.name, Folder.parent_id, cast(Folder.name, Text).label("full_path")).where(
+                Folder.id.in_(folder_ids), Folder.company_id == company_id
+            )
+
+            if user_role == UserRole.EXPERT:
+                folder_base = folder_base.where(Folder.created_by_id == user_id)
+
+            folder_cte = folder_base.cte(name="bulk_folder_hierarchy", recursive=True)
+
+            folder_rec = select(Folder.id, Folder.name, Folder.parent_id, (folder_cte.c.full_path + "/" + Folder.name).label("full_path")).join(
+                folder_cte, Folder.parent_id == folder_cte.c.id
+            )
+
+            if user_role == UserRole.EXPERT:
+                folder_rec = folder_rec.where(Folder.created_by_id == user_id)
+
+            folder_union = folder_cte.union_all(folder_rec)
+            folder_subquery = folder_union.alias("folder_tree")
+
+            folder_docs_stmt = select(Document, folder_subquery.c.full_path).join(folder_subquery, Document.folder_id == folder_subquery.c.id)
+
+            res = await self.db.execute(folder_docs_stmt)
+            for row in res.all():
+                tasks.append(self._process_zip_entry(row[0], row[1], zip_file, semaphore, zip_lock))
+
+        if document_ids:
+            doc_stmt = select(Document).where(Document.id.in_(document_ids), Document.company_id == company_id)
+
+            if user_role == UserRole.EXPERT:
+                doc_stmt = doc_stmt.where(Document.uploaded_by_id == user_id)
+
+            res_docs = await self.db.execute(doc_stmt)
+            for doc in res_docs.scalars().all():
+                tasks.append(self._process_zip_entry(doc, "", zip_file, semaphore, zip_lock))
+
+        if tasks:
+            await asyncio.gather(*tasks)
+
+    async def _process_zip_entry(
+        self,
+        doc: Document,
+        folder_path: str,
+        zip_file: zipfile.ZipFile,
+        semaphore: asyncio.Semaphore,
+        zip_lock: asyncio.Lock,
+    ) -> None:
+        """Вспомогательный метод для обработки одного файла (S3 -> ZIP)"""
+        async with semaphore:
+            try:
+                async with s3_storage.get_file_stream(doc.file_path) as stream:
+                    content = await stream.read()
+
+                async with zip_lock:
+                    relative_path = folder_path.strip("/")
+                    zip_path = os.path.join(relative_path, doc.title)
+
+                    await asyncio.to_thread(zip_file.writestr, zip_path, content)
+            except Exception as e:
+                logger.error(f"Ошибка при упаковке файла {doc.id}: {e}")
