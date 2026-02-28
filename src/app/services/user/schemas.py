@@ -38,7 +38,7 @@ class UserBase(BaseModel):
 class UserCreate(UserBase):
     password: str = Field(..., min_length=12, description="Пароль должен быть не менее 8 символов")
     email_config: EmailConfigCreate | None = None
-    is_active: bool = True
+    is_active: bool
     settings: dict[str, Any] | None = Field(default_factory=dict)
 
 
@@ -49,6 +49,20 @@ class UserRead(UserBase):
     company_id: UUID
     settings: dict[str, Any]
     count_case: int = Field(0, description="Количество дел пользователя")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class WorkerShortResponse(BaseModel):
+    id: UUID
+    full_name: str
+    email: str
+    role: UserRole
+    specialization: str | None = None
+    is_active: bool
+    last_login: datetime | None = None
+    active_cases_count: int = 0
+    total_documents_count: int = 0
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -1,4 +1,4 @@
-from typing import Any
+from urllib.parse import urlencode
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -8,8 +8,18 @@ from src.app.core.auth.deps import UserContext, get_current_user
 from src.app.core.auth.session import SessionManager
 from src.app.core.database.session import get_db
 from src.app.core.redis import get_redis_client
+from src.app.core.schemas import PaginatedResponse
 from src.app.services.user.models import User
-from src.app.services.user.schemas import LogoutResponse, SearchResultDTO, UserCreate, UserFilterParams, UserLoginSchema, UserRead, UserUpdate
+from src.app.services.user.schemas import (
+    LogoutResponse,
+    SearchResultDTO,
+    UserCreate,
+    UserFilterParams,
+    UserLoginSchema,
+    UserRead,
+    UserUpdate,
+    WorkerShortResponse,
+)
 from src.app.services.user.service import UserService
 
 router = APIRouter(prefix="/api/users", tags=["Users & Auth"])
@@ -84,12 +94,30 @@ async def create_user(user_in: UserCreate, db: AsyncSession = Depends(get_db), c
     return await user_service.create_user(creator=current_user, user_in=user_in)
 
 
-@router.get("", response_model=list[UserRead])
+@router.get("", response_model=PaginatedResponse[WorkerShortResponse])
 async def list_users(
-    params: UserFilterParams = Depends(), db: AsyncSession = Depends(get_db), current_user: UserContext = Depends(get_current_user)
-) -> list[dict[Any, Any]]:
+    request: Request,
+    params: UserFilterParams = Depends(),
+    db: AsyncSession = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+) -> PaginatedResponse[WorkerShortResponse]:
     user_service = UserService(db)
-    return await user_service.get_users_list(current_user, params)
+
+    response = await user_service.get_users_list(current_user, params)
+
+    path = request.url.path
+
+    def build_relative_link(p: int) -> str:
+        params_query: dict[str, str] = dict(request.query_params)
+        params_query.update({"page": str(p), "limit": str(params.limit)})
+        return f"{path}?{urlencode(params_query)}"
+
+    if response.meta.has_next:
+        response.meta.next_page_url = build_relative_link(params.page + 1)
+    if response.meta.has_prev:
+        response.meta.prev_page_url = build_relative_link(params.page - 1)
+
+    return response
 
 
 @router.delete("/{user_id}")

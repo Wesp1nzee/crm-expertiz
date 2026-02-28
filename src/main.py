@@ -10,9 +10,9 @@ from sqlalchemy import text
 
 from src.app.core.database import all_models  # noqa: F401
 from src.app.core.database.session import AsyncSessionLocal, engine
+from src.app.core.middleware.logging import LoggingMiddleware
 from src.app.core.redis import get_redis_client
 from src.app.core.storage.s3 import s3_storage
-from src.app.middleware.logging import LoggingMiddleware
 from src.app.services.calendar.endpoints import router as calendar_router
 from src.app.services.case.endpoints import router as cases_router
 from src.app.services.client.endpoints import router as client_router

@@ -104,25 +104,6 @@ class ClientFullResponse(ClientShortResponse):
     model_config = ConfigDict(from_attributes=True)
 
 
-class ClientFilters(BaseModel):
-    """Для GET /clients запросов"""
-
-    type: ClientType | None = None
-    search: str | None = Field(None, description="Поиск по имени или ИНН")
-    page: int = Field(1, ge=1)
-    limit: int = Field(20, ge=1, le=100)
-
-
-class ClientListResponse(BaseModel):
-    """Ответ для списка клиентов с метаданными"""
-
-    items: list[ClientShortResponse]
-    total: int
-    page: int
-    size: int
-    pages: int
-
-
 class SearchResultDTO(BaseModel):
     id: UUID
     name: str

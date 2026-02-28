@@ -1,3 +1,4 @@
+import math
 from collections.abc import Sequence
 from uuid import UUID
 
@@ -6,16 +7,10 @@ from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from src.app.core.schemas import PaginatedResponse, PaginationMeta
 from src.app.services.case.models import Case
 from src.app.services.client.models import Client, Contact
-from src.app.services.client.schemas import (
-    ClientCreate,
-    ClientFilters,
-    ClientFullResponse,
-    ClientListResponse,
-    ClientShortResponse,
-    ClientUpdate,
-)
+from src.app.services.client.schemas import ClientCreate, ClientFullResponse, ClientShortResponse, ClientUpdate
 from src.app.services.user.models import UserRole
 
 
@@ -61,9 +56,9 @@ class ClientService:
 
         return ClientFullResponse.model_validate(client)
 
-    async def get_clients(self, filters: ClientFilters, company_id: UUID) -> ClientListResponse:
-        """Список клиентов с агрегированной статистикой по делам компании"""
-
+    async def get_clients(
+        self, company_id: UUID, page: int, limit: int, client_type: str | None = None, search: str | None = None
+    ) -> PaginatedResponse[ClientShortResponse]:
         case_counts_subq = (
             select(
                 Case.client_id,
@@ -81,43 +76,34 @@ class ClientService:
             .where(Client.company_id == company_id)
         )
 
-        if filters.type:
-            stmt = stmt.where(Client.type == filters.type)
-
-        if filters.search:
-            search_pattern = f"%{filters.search}%"
-            stmt = stmt.where(
-                or_(
-                    Client.name.ilike(search_pattern),
-                    Client.inn.ilike(search_pattern),
-                )
-            )
+        if client_type:
+            stmt = stmt.where(Client.type == client_type)
+        if search:
+            pattern = f"%{search}%"
+            stmt = stmt.where(or_(Client.name.ilike(pattern), Client.inn.ilike(pattern)))
 
         count_stmt = select(func.count()).select_from(stmt.subquery())
-        total_count = (await self.db.execute(count_stmt)).scalar() or 0
+        total_items = (await self.db.execute(count_stmt)).scalar() or 0
 
-        offset = (filters.page - 1) * filters.limit
-        stmt = stmt.order_by(Client.created_at.desc()).offset(offset).limit(filters.limit)
-
+        offset = (page - 1) * limit
+        stmt = stmt.order_by(Client.created_at.desc()).offset(offset).limit(limit)
         result = await self.db.execute(stmt)
         rows = result.all()
 
-        clients_with_counts = []
+        items = []
         for row in rows:
             client_obj = row.Client
             client_obj.active_cases = row.active_cases or 0
             client_obj.total_cases = row.total_cases or 0
-            clients_with_counts.append(ClientShortResponse.model_validate(client_obj))
+            items.append(ClientShortResponse.model_validate(client_obj))
 
-        total_pages = max(1, (total_count + filters.limit - 1) // filters.limit)
+        total_pages = math.ceil(total_items / limit) if total_items > 0 else 1
 
-        return ClientListResponse(
-            items=clients_with_counts,
-            total=total_count,
-            page=filters.page,
-            size=len(clients_with_counts),
-            pages=total_pages,
+        meta = PaginationMeta(
+            total_items=total_items, total_pages=total_pages, current_page=page, per_page=limit, has_next=page < total_pages, has_prev=page > 1
         )
+
+        return PaginatedResponse[ClientShortResponse](items=items, meta=meta)
 
     async def update_client(self, client_id: str, update_data: ClientUpdate, company_id: UUID, user_role: UserRole) -> ClientFullResponse | None:
         """Обновляет данные клиента (с проверкой прав и компании)"""

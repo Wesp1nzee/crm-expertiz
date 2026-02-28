@@ -1,5 +1,5 @@
+import math
 from datetime import UTC, datetime
-from typing import Any
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -9,9 +9,10 @@ from sqlalchemy.orm import selectinload
 
 from src.app.core.auth.deps import UserContext
 from src.app.core.auth.security import hash_password, verify_password
+from src.app.core.schemas import PaginatedResponse, PaginationMeta
 from src.app.services.case.models import Case
 from src.app.services.user.models import User, UserEmailConfig, UserRole
-from src.app.services.user.schemas import ROLE_PERMISSIONS, UserCreate, UserFilterParams, UserLoginSchema, UserUpdate
+from src.app.services.user.schemas import ROLE_PERMISSIONS, UserCreate, UserFilterParams, UserLoginSchema, UserUpdate, WorkerShortResponse
 
 
 class UserService:
@@ -74,19 +75,18 @@ class UserService:
         await self.db.refresh(new_user)
         return new_user
 
-    async def get_users_list(self, current_user: UserContext, params: UserFilterParams) -> list[dict[Any, Any]]:
+    async def get_users_list(self, current_user: UserContext, params: UserFilterParams) -> PaginatedResponse[WorkerShortResponse]:
         allowed_roles = ROLE_PERMISSIONS.get(current_user.role, [])
-
         case_count_subquery = (
             select(func.count(Case.id))
             .where(Case.assigned_user_id == User.id)
             .where(Case.deleted_at.is_(None))
             .scalar_subquery()
-            .label("count_case")
+            .label("active_cases_count")
         )
 
         query = (
-            select(User, func.coalesce(case_count_subquery, 0).label("count_case"))
+            select(User, func.coalesce(case_count_subquery, 0).label("active_cases_count"))
             .where(User.company_id == current_user.company_id)
             .where(User.role.in_(allowed_roles))
             .where(User.id != current_user.id)
@@ -97,45 +97,43 @@ class UserService:
         if params.is_active is not None:
             query = query.where(User.is_active == params.is_active)
         if params.search:
+            search_filter = f"%{params.search}%"
             query = query.where(
                 or_(
-                    User.full_name.ilike(f"%{params.search}%"),
-                    User.email.ilike(f"%{params.search}%"),
+                    User.full_name.ilike(search_filter),
+                    User.email.ilike(search_filter),
                 )
             )
 
-        sort_column = getattr(User, params.sort_by, User.created_at)
-        if params.order == "desc":
-            query = query.order_by(desc(sort_column))
-        else:
-            query = query.order_by(asc(sort_column))
+        count_stmt = select(func.count()).select_from(query.subquery())
+        total_items = (await self.db.execute(count_stmt)).scalar() or 0
 
-        query = query.offset((params.page - 1) * params.limit).limit(params.limit)
+        sort_column = getattr(User, params.sort_by, User.created_at)
+        query = query.order_by(desc(sort_column) if params.order == "desc" else asc(sort_column))
+
+        offset = (params.page - 1) * params.limit
+        query = query.offset(offset).limit(params.limit)
 
         result = await self.db.execute(query)
         rows = result.all()
 
-        users_list = []
-        for user_obj, count_case in rows:
-            users_list.append(
-                {
-                    "id": user_obj.id,
-                    "email": user_obj.email,
-                    "full_name": user_obj.full_name,
-                    "role": user_obj.role,
-                    "specialization": user_obj.specialization,
-                    "is_active": user_obj.is_active,
-                    "can_authenticate": user_obj.can_authenticate,
-                    "company_id": user_obj.company_id,
-                    "settings": user_obj.settings,
-                    "created_at": user_obj.created_at,
-                    "updated_at": user_obj.updated_at,
-                    "last_login": user_obj.last_login,
-                    "count_case": count_case or 0,
-                }
-            )
+        items = []
+        for user_obj, active_cases_count in rows:
+            user_obj.active_cases_count = active_cases_count
+            items.append(WorkerShortResponse.model_validate(user_obj))
 
-        return users_list
+        total_pages = math.ceil(total_items / params.limit) if total_items > 0 else 1
+
+        meta = PaginationMeta(
+            total_items=total_items,
+            total_pages=total_pages,
+            current_page=params.page,
+            per_page=params.limit,
+            has_next=params.page < total_pages,
+            has_prev=params.page > 1,
+        )
+
+        return PaginatedResponse[WorkerShortResponse](items=items, meta=meta)
 
     async def update_access(self, user_id: str, can_auth: bool) -> User:
         user = await self.db.get(User, user_id)

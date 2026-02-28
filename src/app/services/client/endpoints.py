@@ -1,16 +1,17 @@
 import uuid
+from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.auth.deps import UserContext, get_current_user
 from src.app.core.database.session import get_db
+from src.app.core.schemas import PaginatedResponse
 from src.app.services.client.schemas import (
     ClientCreate,
-    ClientFilters,
     ClientFullResponse,
-    ClientListResponse,
+    ClientShortResponse,
     ClientUpdate,
     SearchResultDTO,
 )
@@ -50,18 +51,33 @@ async def create_client(
         ) from err
 
 
-@router.get("", response_model=ClientListResponse)
+@router.get("", response_model=PaginatedResponse[ClientShortResponse])
 async def get_clients(
+    request: Request,
     type: str | None = None,
     search: str | None = None,
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
     current_user: UserContext = Depends(get_current_user),
-) -> ClientListResponse:
+) -> PaginatedResponse[ClientShortResponse]:
     service = ClientService(db)
-    filters = ClientFilters(type=type, search=search, page=page, limit=limit)
-    return await service.get_clients(filters, current_user.company_id)
+
+    response = await service.get_clients(company_id=current_user.company_id, page=page, limit=limit, client_type=type, search=search)
+
+    path = request.url.path
+
+    def build_relative_link(p: int) -> str:
+        params: dict[str, str] = dict(request.query_params)
+        params.update({"page": str(p), "limit": str(limit)})
+        return f"{path}?{urlencode(params)}"
+
+    if response.meta.has_next:
+        response.meta.next_page_url = build_relative_link(page + 1)
+    if response.meta.has_prev:
+        response.meta.prev_page_url = build_relative_link(page - 1)
+
+    return response
 
 
 @router.get("/{client_id}", response_model=ClientFullResponse)
