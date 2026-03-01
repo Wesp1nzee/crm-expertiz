@@ -18,6 +18,7 @@ from src.app.services.case.endpoints import router as cases_router
 from src.app.services.client.endpoints import router as client_router
 from src.app.services.company.endpoints import router as company_router
 from src.app.services.document.endpoints import router as document_router
+from src.app.services.share.endpoints import router as share_router
 from src.app.services.user.endpoints import router as user_router
 from src.app.services.user.setup import create_first_admin
 
@@ -94,6 +95,7 @@ app.include_router(document_router)
 app.include_router(user_router)
 app.include_router(company_router)
 app.include_router(calendar_router)
+app.include_router(share_router)
 
 
 if __name__ == "__main__":

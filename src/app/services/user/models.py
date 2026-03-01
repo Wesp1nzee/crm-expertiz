@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from src.app.services.company import Company
     from src.app.services.document import Document, Folder
     from src.app.services.mail import MailMessage
+    from src.app.services.share.models import ShareBatch
 
 
 class UserRole(str, enum.Enum):
@@ -51,6 +52,10 @@ class User(TenantBase):
     mail_messages: Mapped[list[MailMessage]] = relationship("MailMessage", back_populates="user")
     company: Mapped[Company] = relationship("Company", back_populates="users")
     created_folders: Mapped[list[Folder]] = relationship("Folder", back_populates="creator")
+    share_batches: Mapped[list[ShareBatch]] = relationship("ShareBatch", foreign_keys="[ShareBatch.owner_id]", back_populates="owner")
+    received_shares: Mapped[list[ShareBatch]] = relationship(
+        "ShareBatch", foreign_keys="[ShareBatch.shared_with_user_id]", back_populates="shared_with"
+    )
     __table_args__ = (
         # Поиск пользователей в рамках компании
         Index("ix_users_company_id_is_active", "company_id", "is_active"),  # Активные пользователи компании

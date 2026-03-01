@@ -3,14 +3,16 @@ import urllib.parse
 import uuid
 import zipfile
 from collections.abc import AsyncGenerator
+from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.auth.deps import UserContext, get_current_user
 from src.app.core.database.session import get_db
+from src.app.core.schemas.base import PaginatedResponse
 from src.app.services.document.models import Folder
 from src.app.services.document.schemas import (
     AssetUpdate,
@@ -32,37 +34,53 @@ router = APIRouter(prefix="/api/documents", tags=["Documents"])
 
 @router.get(
     "",
-    response_model=list[FileSystemEntry],
+    response_model=PaginatedResponse[FileSystemEntry],
     status_code=status.HTTP_200_OK,
     summary="Получить список файлов и папок",
     description=(
-        "Возвращает объединенный список папок и файлов. Если передан search, ищет глобально. Если нет - показывает содержимое конкретной папки."
+        "Возвращает объединённый список папок и файлов с пагинацией. Если передан search — ищет глобально, иначе показывает содержимое папки."
     ),
 )
 async def list_assets(
+    request: Request,
     folder_id: uuid.UUID | None = Query(None, description="ID папки (null для корня)"),
     case_id: uuid.UUID | None = Query(None, description="Фильтр по конкретному делу"),
     search: str | None = Query(None, description="Поиск по названию"),
-    sort_by: str = Query("created_at", description="Поле для сортировки (name, created_at, size)"),
+    sort_by: str = Query("created_at", description="Поле сортировки: name, created_at, size"),
     order: str = Query("desc", pattern="^(asc|desc)$"),
-    limit: int = Query(50, ge=1, le=100),
-    offset: int = Query(0, ge=0),
+    page: int = Query(1, ge=1),
+    limit: int = Query(25, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
     current_user: UserContext = Depends(get_current_user),
-) -> list[FileSystemEntry]:
+) -> PaginatedResponse[FileSystemEntry]:
     service = DocumentService(db)
-    return await service.get_unified_list(
+
+    response = await service.get_unified_list(
+        company_id=current_user.company_id,
+        page=page,
+        limit=limit,
         folder_id=folder_id,
         case_id=case_id,
         search=search,
         sort_by=sort_by,
         order=order,
-        limit=limit,
-        offset=offset,
         user_id=current_user.id,
         user_role=current_user.role,
-        company_id=current_user.company_id,
     )
+
+    path = request.url.path
+
+    def build_relative_link(p: int) -> str:
+        params: dict[str, str] = dict(request.query_params)
+        params.update({"page": str(p), "limit": str(limit)})
+        return f"{path}?{urlencode(params)}"
+
+    if response.meta.has_next:
+        response.meta.next_page_url = build_relative_link(page + 1)
+    if response.meta.has_prev:
+        response.meta.prev_page_url = build_relative_link(page - 1)
+
+    return response
 
 
 @router.post(

@@ -42,6 +42,11 @@ class DocumentResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ShareInfoBrief(BaseModel):
+    recipient_count: int  # Кол-во сотрудников с активным доступом
+    public_link_count: int  # Кол-во активных публичных ссылок
+
+
 class FileSystemEntry(BaseModel):
     id: uuid.UUID
     name: str
@@ -52,6 +57,9 @@ class FileSystemEntry(BaseModel):
     created_by_id: uuid.UUID | None
     created_by_name: str | None = None
     parent_id: uuid.UUID | None
+    case_id: uuid.UUID | None = None  # uuid дела (только для root)
+    case_number: str | None = None  # номер дела (только для root)
+    share_info: ShareInfoBrief | None = None
 
 
 class DocumentDownloadUrl(BaseModel):

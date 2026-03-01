@@ -1,3 +1,4 @@
+import math
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -15,7 +16,7 @@ from src.app.services.case.schemas import (
     CaseCreateRequest,
     CaseDetailsResponse,
     CaseResponse,
-    CasesSummary,
+    CasesPaginationMeta,
     CaseSuggestionResponse,
     CaseUpdateRequest,
     ClientResponse,
@@ -26,7 +27,6 @@ from src.app.services.case.schemas import (
     GetCasesQuery,
     GetCasesResponse,
     MailMessageResponse,
-    PaginationInfo,
     SortField,
     SortOrder,
     UserResponse,
@@ -265,7 +265,13 @@ class CaseService:
         await self.db.commit()
         return True
 
-    async def get_cases(self, query_params: GetCasesQuery, user_id: UUID, user_role: UserRole, company_id: UUID) -> GetCasesResponse:
+    async def get_cases(
+        self,
+        query_params: GetCasesQuery,
+        user_id: UUID,
+        user_role: UserRole,
+        company_id: UUID,
+    ) -> GetCasesResponse:
         base_where = [Case.deleted_at.is_(None), Case.company_id == company_id]
         if user_role == UserRole.EXPERT:
             base_where.append(Case.assigned_user_id == user_id)
@@ -302,13 +308,13 @@ class CaseService:
         if query_params.search:
             search_term = f"%{query_params.search}%"
             search_condition = (
-                (Case.number.ilike(search_term))
-                | (Case.case_number.ilike(search_term))
-                | (Case.authority.ilike(search_term))
-                | (Case.object_address.ilike(search_term))
-                | (Case.plaintiff.ilike(search_term))
-                | (Case.defendant.ilike(search_term))
-                | (Case.remarks.ilike(search_term))
+                Case.number.ilike(search_term)
+                | Case.case_number.ilike(search_term)
+                | Case.authority.ilike(search_term)
+                | Case.object_address.ilike(search_term)
+                | Case.plaintiff.ilike(search_term)
+                | Case.defendant.ilike(search_term)
+                | Case.remarks.ilike(search_term)
             )
             base_count_stmt = base_count_stmt.outerjoin(Client, Case.client_id == Client.id).where(
                 search_condition | Client.name.ilike(search_term)
@@ -317,12 +323,15 @@ class CaseService:
         total_count = (await self.db.execute(base_count_stmt)).scalar() or 0
 
         inactive_statuses = [CaseStatus.executed, CaseStatus.cancelled, CaseStatus.archive]
-        active_count_stmt = select(func.count(Case.id)).where(*base_where, Case.status.notin_(inactive_statuses))
-        active_count = (await self.db.execute(active_count_stmt)).scalar() or 0
+        active_count = (
+            await self.db.execute(select(func.count(Case.id)).where(*base_where, Case.status.notin_(inactive_statuses)))
+        ).scalar() or 0
 
-        now = datetime.now()
-        overdue_count_stmt = select(func.count(Case.id)).where(*base_where, Case.status.notin_(inactive_statuses), Case.deadline < now)
-        overdue_count = (await self.db.execute(overdue_count_stmt)).scalar() or 0
+        overdue_count = (
+            await self.db.execute(
+                select(func.count(Case.id)).where(*base_where, Case.status.notin_(inactive_statuses), Case.deadline < datetime.now())
+            )
+        ).scalar() or 0
 
         stmt = (
             select(Case)
@@ -352,23 +361,28 @@ class CaseService:
             stmt = stmt.order_by(desc(Case.created_at))
 
         offset = (query_params.page - 1) * query_params.limit
-        result = await self.db.execute(stmt.offset(offset).limit(query_params.limit))
-        cases = result.scalars().all()
+        cases = (await self.db.execute(stmt.offset(offset).limit(query_params.limit))).scalars().all()
+
+        total_pages = max(1, math.ceil(total_count / query_params.limit))
 
         return GetCasesResponse(
-            data=[
+            items=[
                 CaseResponse.model_validate(c).model_copy(
                     update={"assigned_expert": UserResponse.model_validate(c.assigned_user) if c.assigned_user else None}
                 )
                 for c in cases
             ],
-            pagination=PaginationInfo(
-                total=total_count,
-                page=query_params.page,
-                limit=query_params.limit,
-                total_pages=max(1, (total_count + query_params.limit - 1) // query_params.limit),
+            meta=CasesPaginationMeta(
+                total_items=total_count,
+                total_pages=total_pages,
+                current_page=query_params.page,
+                per_page=query_params.limit,
+                has_next=query_params.page < total_pages,
+                has_prev=query_params.page > 1,
+                active=active_count,
+                overdue=overdue_count,
+                completed=max(0, total_count - active_count),
             ),
-            summary=CasesSummary(active=active_count, overdue=overdue_count, completed=max(0, total_count - active_count)),
         )
 
     async def suggest_cases(self, query: str, user_id: UUID, user_role: UserRole, company_id: UUID) -> list[CaseSuggestionResponse]:

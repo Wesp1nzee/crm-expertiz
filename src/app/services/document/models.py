@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from enum import Enum
 from typing import TYPE_CHECKING
 
 from sqlalchemy import UUID, BigInteger, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, func
@@ -9,7 +10,26 @@ from src.app.core.database.base import TenantBase
 
 if TYPE_CHECKING:
     from src.app.services.case.models import Case
+    from src.app.services.share.models import DocumentShare
     from src.app.services.user.models import User
+
+
+class ShareType(str, Enum):
+    LINK = "link"  # Доступ по публичной ссылке
+    USER = "user"  # Доступ конкретному сотруднику внутри CRM
+
+
+class PermissionLevel(str, Enum):
+    VIEW = "view"  # Только просмотр
+    EDIT = "edit"  # Возможность переименовывать, перемещать или удалять
+
+
+class ShareAccessType(str, Enum):
+    """Типы действий для лога аудита"""
+
+    VIEW = "view"  # Открытие ссылки/файла
+    DOWNLOAD = "download"  # Скачивание файла
+    PREVIEW = "preview"  # Просмотр превью в браузере
 
 
 class Folder(TenantBase):
@@ -33,6 +53,7 @@ class Folder(TenantBase):
         foreign_keys="Case.root_folder_id",
         overlaps="root_folder",
     )
+    shares: Mapped[list[DocumentShare]] = relationship("DocumentShare", back_populates="folder", cascade="all, delete-orphan")
     __table_args__ = (
         Index("ix_folders_company_id_case_id", "company_id", "case_id"),
         Index("ix_folders_company_id_parent_id", "company_id", "parent_id"),
@@ -67,7 +88,7 @@ class Document(TenantBase):
     uploaded_by: Mapped[User | None] = relationship("User", back_populates="uploaded_documents")
     folder: Mapped[Folder | None] = relationship("Folder", back_populates="documents")
     case: Mapped[Case | None] = relationship("Case", back_populates="documents")
-
+    shares: Mapped[list[DocumentShare]] = relationship("DocumentShare", back_populates="document", cascade="all, delete-orphan")
     __table_args__ = (
         Index("ix_documents_company_id_case_id", "company_id", "case_id"),
         Index("ix_documents_company_id_folder_id", "company_id", "folder_id"),

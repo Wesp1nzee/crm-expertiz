@@ -5,6 +5,8 @@ from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.app.core.schemas.base import PaginatedResponse, PaginationMeta
+
 
 class EfficiencyMetrics(BaseModel):
     avg_completion_time: float  # Среднее время закрытия (в днях)
@@ -244,23 +246,14 @@ class GetCasesQuery(BaseModel):
     limit: int = Field(20, ge=1, le=100)
 
 
-class PaginationInfo(BaseModel):
-    total: int
-    page: int
-    limit: int
-    total_pages: int
-
-
-class CasesSummary(BaseModel):
+class CasesPaginationMeta(PaginationMeta):
     active: int
     overdue: int
     completed: int
 
 
-class GetCasesResponse(BaseModel):
-    data: list[CaseResponse]
-    pagination: PaginationInfo
-    summary: CasesSummary
+class GetCasesResponse(PaginatedResponse[CaseResponse]):
+    meta: CasesPaginationMeta
 
 
 class CaseDetailsResponse(BaseModel):
