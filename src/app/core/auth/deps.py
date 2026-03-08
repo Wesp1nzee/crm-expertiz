@@ -1,56 +1,14 @@
-from typing import Any
-from uuid import UUID
+from fastapi import HTTPException, Request, Response, status
+from pydantic import ValidationError
 
-from fastapi import HTTPException, Request, status
-from pydantic import BaseModel, ValidationError
-
+from src.app.core.auth.models import CachedSessionData, UserContext
 from src.app.core.auth.session import SessionManager
 from src.app.core.redis import get_redis_client
-from src.app.services.user.models import UserRole
 
 
-class UserSessionData(BaseModel):
-    id: UUID
-    email: str
-    full_name: str
-    role: UserRole
-    is_active: bool
-    can_authenticate: bool
-    specialization: str | None = None
-    settings: dict[str, Any] = {}
-
-
-class CompanySessionData(BaseModel):
-    id: UUID
-    name: str
-    is_active: bool
-
-
-class CachedSessionData(BaseModel):
-    user_id: UUID
-    user: UserSessionData
-    company: CompanySessionData | None = None
-
-
-class UserContext(BaseModel):
-    id: UUID
-    email: str
-    full_name: str
-    role: UserRole
-    is_active: bool
-    can_authenticate: bool
-    specialization: str | None = None
-    company_id: UUID
-    settings: dict[str, Any] = {}
-
-    company: CompanySessionData | None = None
-
-    model_config = {"from_attributes": True}
-
-
-async def get_current_user(request: Request) -> UserContext:
+async def get_current_user(request: Request, response: Response) -> UserContext:
     """
-    Получает текущего пользователя из сессии Redis.
+    Получает текущего пользователя из сессии Redis и автоматически продлевает сессию.
 
     Returns:
         UserContext: Объект с данными пользователя и компании.
@@ -69,10 +27,23 @@ async def get_current_user(request: Request) -> UserContext:
     if not session_data_raw:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Время сессии истекло. Пожалуйста, войдите снова")
 
+    current_ttl = await redis_client.ttl(f"session:{session_id}")
+
+    if current_ttl < 518_400:  # Если осталось 6 дней, то продлеваем.
+        await session_manager.refresh_session(session_id)
+        response.set_cookie(
+            key="session_id",
+            value=session_id,
+            httponly=True,
+            secure=True,
+            samesite="lax",
+            max_age=604_800,  # 1 неделя
+        )
+
     try:
         cached_data = CachedSessionData.model_validate(session_data_raw)
     except ValidationError as e:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Ошибка проверки данных сессии. Пожалуйста, войдите снова") from e
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Ошибка проверки данных") from e
 
     user_info = cached_data.user
     company_info = cached_data.company

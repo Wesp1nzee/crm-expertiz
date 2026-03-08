@@ -7,7 +7,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from src.app.core.auth.deps import UserContext
+from src.app.core.auth.models import UserContext
 from src.app.core.auth.security import hash_password, verify_password
 from src.app.services.document.models import Document, Folder, ShareAccessType, ShareType
 from src.app.services.share.models import DocumentShare, ShareAccessLog, ShareBatch

@@ -4,17 +4,40 @@ from decimal import Decimal
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from sqlalchemy import UUID, DateTime, ForeignKey, Index, Numeric, String, Text, func
+from sqlalchemy import UUID, Column, DateTime, ForeignKey, Index, Numeric, String, Table, Text, func
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from src.app.core.database.base import TenantBase
+from src.app.core.database.base import Base, TenantBase
 
 if TYPE_CHECKING:
     from src.app.services.client import Client
     from src.app.services.document import Document, Folder
     from src.app.services.mail import MailMessage
     from src.app.services.user import User
+
+case_experts = Table(
+    "case_experts",
+    Base.metadata,
+    Column(
+        "case_id",
+        UUID(as_uuid=True),
+        ForeignKey("cases.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column(
+        "user_id",
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column(
+        "assigned_at",
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    ),
+)
 
 
 class CaseStatus(str, Enum):
@@ -44,7 +67,7 @@ class Case(TenantBase):
         default=CaseStatus.in_work,
         index=True,
     )
-    assigned_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+
     start_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     deadline: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     completion_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
@@ -61,15 +84,21 @@ class Case(TenantBase):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+
     client: Mapped[Client] = relationship("Client", back_populates="cases")
-    assigned_user: Mapped[User | None] = relationship("User", back_populates="cases")
+    experts: Mapped[list[User]] = relationship(
+        "User",
+        secondary="case_experts",
+        back_populates="expert_cases",
+        lazy="selectin",
+    )
+
     documents: Mapped[list[Document]] = relationship("Document", back_populates="case", cascade="all, delete-orphan")
     mail_messages: Mapped[list[MailMessage]] = relationship("MailMessage", back_populates="case")
 
     root_folder_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("folders.id", ondelete="SET NULL"), nullable=True, index=True, unique=True
     )
-
     root_folder: Mapped[Folder | None] = relationship(
         "Folder",
         back_populates="case_root",
@@ -80,7 +109,6 @@ class Case(TenantBase):
     __table_args__ = (
         Index("ix_cases_company_id_client_id", "company_id", "client_id"),
         Index("ix_cases_company_id_status", "company_id", "status"),
-        Index("ix_cases_company_id_assigned_user_id_status", "company_id", "assigned_user_id", "status"),
         Index("ix_cases_company_id_deadline", "company_id", "deadline"),
         Index("ix_cases_company_id_created_at", "company_id", "created_at"),
         Index("ix_cases_number_btree", "number"),

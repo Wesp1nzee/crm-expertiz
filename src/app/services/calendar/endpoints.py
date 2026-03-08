@@ -5,7 +5,8 @@ from uuid import UUID
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.core.auth.deps import UserContext, get_current_user
+from src.app.core.auth.deps import get_current_user
+from src.app.core.auth.models import UserContext
 from src.app.core.database.session import get_db
 from src.app.services.calendar.models import CalendarActivity, CalendarEvent, CalendarTask
 from src.app.services.calendar.schemas import CalendarResponse, EventCreate, EventUpdate, TaskCreate

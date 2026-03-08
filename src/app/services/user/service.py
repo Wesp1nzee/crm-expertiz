@@ -7,10 +7,10 @@ from sqlalchemy import asc, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from src.app.core.auth.deps import UserContext
+from src.app.core.auth.models import UserContext
 from src.app.core.auth.security import hash_password, verify_password
 from src.app.core.schemas import PaginatedResponse, PaginationMeta
-from src.app.services.case.models import Case
+from src.app.services.case.models import case_experts
 from src.app.services.user.models import User, UserEmailConfig, UserRole
 from src.app.services.user.schemas import ROLE_PERMISSIONS, UserCreate, UserFilterParams, UserLoginSchema, UserUpdate, WorkerShortResponse
 
@@ -77,12 +77,9 @@ class UserService:
 
     async def get_users_list(self, current_user: UserContext, params: UserFilterParams) -> PaginatedResponse[WorkerShortResponse]:
         allowed_roles = ROLE_PERMISSIONS.get(current_user.role, [])
+
         case_count_subquery = (
-            select(func.count(Case.id))
-            .where(Case.assigned_user_id == User.id)
-            .where(Case.deleted_at.is_(None))
-            .scalar_subquery()
-            .label("active_cases_count")
+            select(func.count(case_experts.c.case_id)).where(case_experts.c.user_id == User.id).scalar_subquery().label("active_cases_count")
         )
 
         query = (

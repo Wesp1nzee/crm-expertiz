@@ -34,17 +34,19 @@ class User(TenantBase):
     hashed_password: Mapped[str] = mapped_column(Text, nullable=False)
     full_name: Mapped[str] = mapped_column(Text, nullable=False)
     role: Mapped[UserRole] = mapped_column(SQLEnum(UserRole, native_enum=False), nullable=False)
-    # TODO: Добавить атрибут online
     is_active: Mapped[bool] = mapped_column(Boolean, default=False, server_default="true")
     can_authenticate: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     last_login: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
     settings: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, server_default="{}")
     specialization: Mapped[str | None] = mapped_column(Text, nullable=True)
-
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    cases: Mapped[list[Case]] = relationship("Case", back_populates="assigned_user")
+    expert_cases: Mapped[list[Case]] = relationship(
+        "Case",
+        secondary="case_experts",
+        back_populates="experts",
+    )
+
     email_config: Mapped[UserEmailConfig | None] = relationship(
         "UserEmailConfig", back_populates="user", uselist=False, cascade="all, delete-orphan"
     )
@@ -56,15 +58,15 @@ class User(TenantBase):
     received_shares: Mapped[list[ShareBatch]] = relationship(
         "ShareBatch", foreign_keys="[ShareBatch.shared_with_user_id]", back_populates="shared_with"
     )
+
     __table_args__ = (
-        # Поиск пользователей в рамках компании
-        Index("ix_users_company_id_is_active", "company_id", "is_active"),  # Активные пользователи компании
-        Index("ix_users_company_id_role", "company_id", "role"),  # Пользователи по роли в компании
-        Index("ix_users_company_id_can_authenticate", "company_id", "can_authenticate"),  # Кто может логиниться в компании
-        Index("ix_users_company_id_last_login", "company_id", "last_login"),  # Сортировка по последнему входу в компании
-        Index("ix_users_company_id_created_at", "company_id", "created_at"),  # Хронология регистрации в компании
-        Index("ix_users_company_id_email", "company_id", "email"),  # Уникальность email в рамках компании
-        Index("ix_users_full_name_prefix", "full_name", postgresql_ops={"full_name": "text_pattern_ops"}),  # Поиск по префиксу имени
+        Index("ix_users_company_id_is_active", "company_id", "is_active"),
+        Index("ix_users_company_id_role", "company_id", "role"),
+        Index("ix_users_company_id_can_authenticate", "company_id", "can_authenticate"),
+        Index("ix_users_company_id_last_login", "company_id", "last_login"),
+        Index("ix_users_company_id_created_at", "company_id", "created_at"),
+        Index("ix_users_company_id_email", "company_id", "email"),
+        Index("ix_users_full_name_prefix", "full_name", postgresql_ops={"full_name": "text_pattern_ops"}),
     )
 
 

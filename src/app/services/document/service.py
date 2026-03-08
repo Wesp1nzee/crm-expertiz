@@ -28,7 +28,7 @@ from sqlalchemy.sql import Select
 
 from src.app.core.schemas.base import PaginatedResponse, PaginationMeta
 from src.app.core.storage.s3 import s3_storage
-from src.app.services.case.models import Case
+from src.app.services.case.models import Case, case_experts
 from src.app.services.document.models import Document, Folder, ShareType
 from src.app.services.document.schemas import FileSystemEntry, FolderCreate, ShareInfoBrief
 from src.app.services.share.models import DocumentShare, ShareBatch
@@ -468,9 +468,12 @@ class DocumentService:
             return f_stmt, d_stmt
 
         if user_role == UserRole.EXPERT and user_id is not None:
-            expert_case_sq = select(Case.id).where(Case.assigned_user_id == user_id, Case.company_id == company_id).scalar_subquery()
+            # Дела эксперта через case_experts (many-to-many)
+            expert_case_sq = select(case_experts.c.case_id).where(case_experts.c.user_id == user_id).scalar_subquery()
 
+            # Папки: созданные экспертом ИЛИ принадлежащие его делам
             f_own = f_base.where(or_(Folder.created_by_id == user_id, Folder.case_id.in_(expert_case_sq)))
+            # Документы: загруженные экспертом ИЛИ принадлежащие его делам
             d_own = d_base.where(or_(Document.uploaded_by_id == user_id, Document.case_id.in_(expert_case_sq)))
             f_own, d_own = apply_filters(f_own, d_own)
 
@@ -675,15 +678,6 @@ class DocumentService:
         document_ids: list[uuid.UUID],
         folder_ids: list[uuid.UUID],
     ) -> dict[tuple[str, uuid.UUID], ShareInfoBrief]:
-        """
-        Загружает агрегированную статистику шаров для набора ресурсов.
-        Выполняет максимум 2 запроса к БД (для документов и для папок)
-        независимо от количества элементов на странице.
-
-        Возвращает:
-            ("document", doc_id)    -> ShareInfoBrief
-            ("folder",   folder_id) -> ShareInfoBrief
-        """
         if not owner_id or (not document_ids and not folder_ids):
             return {}
 

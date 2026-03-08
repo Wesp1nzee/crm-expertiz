@@ -1,18 +1,28 @@
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from src.app.core.schemas.base import PaginatedResponse, PaginationMeta
 
 
 class EfficiencyMetrics(BaseModel):
-    avg_completion_time: float  # Среднее время закрытия (в днях)
-    conversion_rate: float  # % дел, перешедших в выполненные за месяц
-    conversion_trend: float  # Разница в конверсии по сравнению с прошлым месяцем
-    throughput: float  # Пропускная способность (кол-во закрытых дел на 1 сотрудника)
+    avg_completion_time: float
+    conversion_rate: float
+    conversion_trend: float
+    throughput: float
+
+
+class RecentCaseItem(BaseModel):
+    id: uuid.UUID
+    number: str
+    case_number: str
+    status: CaseStatus
+    cost: Decimal
+    created_at: datetime
+    client_id: uuid.UUID
 
 
 class FinancialSummaryResponse(BaseModel):
@@ -25,6 +35,7 @@ class FinancialSummaryResponse(BaseModel):
     active_cases: int
     overdue_cases: int
     efficiency: EfficiencyMetrics
+    recent_cases: list[RecentCaseItem]
 
 
 class CaseStatus(str, Enum):
@@ -49,7 +60,7 @@ class ContactType(str, Enum):
     individual = "individual"
 
 
-# === Nested Schemas ===
+# ── Nested Schemas ────────────────────────────────────────────────────────────
 
 
 class ContactResponse(BaseModel):
@@ -121,8 +132,11 @@ class MailMessageResponse(BaseModel):
     subject: str
     body: str | None = None
     sent_at: datetime
-    direction: str  # e.g., "incoming" or "outgoing"
+    direction: str
     created_at: datetime
+
+
+# ── Case Schemas ──────────────────────────────────────────────────────────────
 
 
 class CaseBase(BaseModel):
@@ -136,7 +150,6 @@ class CaseBase(BaseModel):
     object_type: str
     object_address: str
     status: CaseStatus = CaseStatus.in_work
-    assigned_user_id: uuid.UUID | None = None
     start_date: datetime
     deadline: datetime
     completion_date: datetime | None = None
@@ -153,7 +166,8 @@ class CaseBase(BaseModel):
 
 
 class CaseCreateRequest(CaseBase):
-    pass
+    # Список экспертов при создании (опционально)
+    expert_ids: list[uuid.UUID] = Field(default_factory=list)
 
 
 class CaseUpdateRequest(BaseModel):
@@ -174,21 +188,33 @@ class CaseUpdateRequest(BaseModel):
     cash_amount: Decimal | None = None
     remaining_debt: Decimal | None = None
     completion_date: datetime | None = None
-    assigned_user_id: uuid.UUID | None = None
     archive_status: str | None = None
     remarks: str | None = None
     judge_name: str | None = None
+
+    @field_validator("start_date", "deadline", "completion_date", mode="after")
+    @classmethod
+    def make_utc(cls, v: datetime | None) -> datetime | None:
+        if v is not None and v.tzinfo is None:
+            return v.replace(tzinfo=UTC)
+        return v
+
+
+class AssignExpertsRequest(BaseModel):
+    """Тело запроса для назначения/замены списка экспертов на дело."""
+
+    expert_ids: list[uuid.UUID]
 
 
 class CaseResponse(CaseBase):
     id: uuid.UUID
     created_at: datetime
     updated_at: datetime
-    assigned_expert: UserResponse | None = None
+    # Список экспертов вместо одного assigned_expert
+    experts: list[UserResponse] = Field(default_factory=list)
 
 
 class SortField(str, Enum):
-    # Поля для сортировки
     CREATED_AT = "created_at"
     UPDATED_AT = "updated_at"
     START_DATE = "start_date"
@@ -199,8 +225,8 @@ class SortField(str, Enum):
     STATUS = "status"
     COST = "cost"
     REMAINING_DEBT = "remaining_debt"
-    CLIENT_NAME = "client_name"  # Сортировка по имени клиента (через join)
-    EXPERT_NAME = "expert_name"  # Сортировка по имени эксперта (через join)
+    CLIENT_NAME = "client_name"
+    EXPERT_NAME = "expert_name"
 
 
 class SortOrder(str, Enum):
@@ -209,39 +235,29 @@ class SortOrder(str, Enum):
 
 
 class GetCasesQuery(BaseModel):
-    # Фильтры
     status: list[CaseStatus] | None = None
+    # Фильтр по эксперту — ищет дела где этот пользователь в списке экспертов
     expert_id: uuid.UUID | None = None
     client_id: uuid.UUID | None = None
     start_date: datetime | None = None
     end_date: datetime | None = None
-
-    # Новые фильтры
-    case_type: str | None = None  # Тип дела (административное, гражданское и т.д.)
-    object_type: str | None = None  # Тип объекта (земля, недвижимость и т.д.)
-    authority: str | None = None  # Орган власти/суд
-    object_address: str | None = None  # Адрес объекта (поиск по частичному совпадению)
-    number: str | None = None  # Номер дела (точное совпадение)
-    case_number: str | None = None  # Номер производства (точное совпадение)
-    search: str | None = None  # Поиск по нескольким полям (общий поиск)
-
-    # Фильтры по стоимости
+    case_type: str | None = None
+    object_type: str | None = None
+    authority: str | None = None
+    object_address: str | None = None
+    number: str | None = None
+    case_number: str | None = None
+    search: str | None = None
     min_cost: Decimal | None = None
     max_cost: Decimal | None = None
     min_remaining_debt: Decimal | None = None
     max_remaining_debt: Decimal | None = None
-
-    # Фильтры по датам (дополнительные)
-    completion_start_date: datetime | None = None  # Начальная дата завершения
-    completion_end_date: datetime | None = None  # Конечная дата завершения
-    deadline_start_date: datetime | None = None  # Начальная дата крайнего срока
-    deadline_end_date: datetime | None = None  # Конечная дата крайнего срока
-
-    # Сортировка
+    completion_start_date: datetime | None = None
+    completion_end_date: datetime | None = None
+    deadline_start_date: datetime | None = None
+    deadline_end_date: datetime | None = None
     sort_field: SortField | None = SortField.CREATED_AT
     sort_order: SortOrder | None = SortOrder.DESC
-
-    # Пагинация
     page: int = Field(1, ge=1)
     limit: int = Field(20, ge=1, le=100)
 
@@ -261,7 +277,7 @@ class CaseDetailsResponse(BaseModel):
 
     case: CaseResponse
     client: ClientResponse
-    assigned_experts: list[UserResponse] = Field(default_factory=list)
+    experts: list[UserResponse] = Field(default_factory=list)
     documents: list[DocumentResponse] = Field(default_factory=list)
     events: list[MailMessageResponse] = Field(default_factory=list)
     folders: list[FolderResponse] = Field(default_factory=list)

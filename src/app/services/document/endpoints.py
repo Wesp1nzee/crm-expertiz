@@ -10,7 +10,8 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.core.auth.deps import UserContext, get_current_user
+from src.app.core.auth.deps import get_current_user
+from src.app.core.auth.models import UserContext
 from src.app.core.database.session import get_db
 from src.app.core.schemas.base import PaginatedResponse
 from src.app.services.document.models import Folder

@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.core.auth.deps import UserContext, get_current_user
+from src.app.core.auth.deps import get_current_user
+from src.app.core.auth.models import UserContext
 from src.app.core.database.session import get_db
 from src.app.services.company.models import Company
 from src.app.services.company.schemas import CompanyRegister, CompanyResponse
