@@ -1,5 +1,5 @@
+import asyncio
 import logging
-import sys
 from collections.abc import AsyncIterator, Awaitable
 from contextlib import asynccontextmanager
 from typing import Any, cast
@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
+from src.app.core.config import settings
 from src.app.core.database import all_models  # noqa: F401
 from src.app.core.database.session import AsyncSessionLocal, engine
 from src.app.core.middleware.logging import LoggingMiddleware
@@ -18,15 +19,13 @@ from src.app.services.case.endpoints import router as cases_router
 from src.app.services.client.endpoints import router as client_router
 from src.app.services.company.endpoints import router as company_router
 from src.app.services.document.endpoints import router as document_router
+from src.app.services.mail.endpoints import router as mail_router
+from src.app.services.mail.imap_worker import ImapFolderPoller, ImapIdleWorker
 from src.app.services.share.endpoints import router as share_router
 from src.app.services.user.endpoints import router as user_router
 from src.app.services.user.setup import create_first_admin
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)-8s | %(name)s:%(lineno)d | %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-8s | %(name)s:%(lineno)d | %(message)s")
 
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
@@ -64,9 +63,33 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as e:
         print(f"Admin initialization: FAILED | {e}")
 
-    print("Application is ready to serve requests.")
+    imap_idle_worker = ImapIdleWorker(
+        session_factory=AsyncSessionLocal,
+        company_id=settings.MAIL_COMPANY_ID,
+    )
 
+    imap_folder_poller = ImapFolderPoller(
+        session_factory=AsyncSessionLocal,
+        company_id=settings.MAIL_COMPANY_ID,
+    )
+
+    idle_task = asyncio.create_task(imap_idle_worker.run(), name="imap-idle-inbox")
+    poller_task = asyncio.create_task(imap_folder_poller.run(), name="imap-poller-folders")
+    print("IMAP IDLE worker (INBOX): started")
+    print("IMAP Folder poller (Sent/Drafts/Spam/Trash): started")
+    print("Application is ready to serve requests.")
     yield
+
+    print("Shutting down IMAP workers...")
+    imap_idle_worker.stop()
+    imap_folder_poller.stop()
+
+    idle_task.cancel()
+    poller_task.cancel()
+    try:
+        await asyncio.gather(idle_task, poller_task, return_exceptions=True)
+    except Exception:
+        pass
 
     print("Shutting down application...")
     await engine.dispose()
@@ -96,6 +119,7 @@ app.include_router(user_router)
 app.include_router(company_router)
 app.include_router(calendar_router)
 app.include_router(share_router)
+app.include_router(mail_router)
 
 
 if __name__ == "__main__":

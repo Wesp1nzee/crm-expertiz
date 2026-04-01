@@ -6,8 +6,13 @@ from typing import IO, Any
 from aiobotocore.session import get_session
 from botocore.config import Config
 from botocore.response import StreamingBody
+from fastapi import UploadFile
 
 from src.app.core.config import settings
+
+# Минимальный размер части S3 multipart — 5 МБ (требование AWS).
+# В памяти одновременно живёт ровно один такой чанк на файл.
+_MULTIPART_CHUNK_SIZE = 5 * 1024 * 1024  # 5 МБ
 
 
 class S3Storage:
@@ -50,6 +55,76 @@ class S3Storage:
                 Body=file_obj,
                 ContentType=content_type,
             )
+
+    async def upload_file_multipart(
+        self,
+        upload: UploadFile,
+        object_key: str,
+        content_type: str,
+    ) -> int:
+        """
+        Потоковая загрузка файла в S3 через Multipart Upload.
+
+        Читает файл чанками по _MULTIPART_CHUNK_SIZE (5 МБ) —
+        в памяти одновременно живёт ровно один чанк.
+        """
+        async with self.get_client() as client:
+            mpu = await client.create_multipart_upload(
+                Bucket=settings.S3_BUCKET_NAME,
+                Key=object_key,
+                ContentType=content_type,
+            )
+            upload_id: str = mpu["UploadId"]
+            parts: list[dict[str, int | Any]] = []
+            part_number = 1
+            total_bytes = 0
+
+            try:
+                while True:
+                    chunk = await upload.read(_MULTIPART_CHUNK_SIZE)
+                    if not chunk:
+                        break
+
+                    resp = await client.upload_part(
+                        Bucket=settings.S3_BUCKET_NAME,
+                        Key=object_key,
+                        UploadId=upload_id,
+                        PartNumber=part_number,
+                        Body=chunk,
+                    )
+                    parts.append({"PartNumber": part_number, "ETag": resp["ETag"]})
+                    total_bytes += len(chunk)
+                    part_number += 1
+
+                if not parts:
+                    resp = await client.upload_part(
+                        Bucket=settings.S3_BUCKET_NAME,
+                        Key=object_key,
+                        UploadId=upload_id,
+                        PartNumber=1,
+                        Body=b"",
+                    )
+                    parts.append({"PartNumber": 1, "ETag": resp["ETag"]})
+
+                await client.complete_multipart_upload(
+                    Bucket=settings.S3_BUCKET_NAME,
+                    Key=object_key,
+                    UploadId=upload_id,
+                    MultipartUpload={"Parts": parts},
+                )
+
+            except Exception:
+                try:
+                    await client.abort_multipart_upload(
+                        Bucket=settings.S3_BUCKET_NAME,
+                        Key=object_key,
+                        UploadId=upload_id,
+                    )
+                except Exception:  # nosec B105,B110
+                    pass
+                raise
+
+        return total_bytes
 
     async def get_presigned_url(
         self, object_key: str, original_filename: str | None = None, expires_in: int = 3600, download: bool = False

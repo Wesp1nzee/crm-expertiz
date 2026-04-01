@@ -97,7 +97,10 @@ class Case(TenantBase):
     mail_messages: Mapped[list[MailMessage]] = relationship("MailMessage", back_populates="case")
 
     root_folder_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("folders.id", ondelete="SET NULL"), nullable=True, index=True, unique=True
+        ForeignKey("folders.id", ondelete="SET NULL", name="fk_case_root_folder_id_folders", use_alter=True),
+        nullable=True,
+        index=True,
+        unique=True,
     )
     root_folder: Mapped[Folder | None] = relationship(
         "Folder",

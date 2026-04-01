@@ -45,8 +45,6 @@ class CaseService:
     def __init__(self, db_session: AsyncSession) -> None:
         self.db = db_session
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
-
     def _expert_filter(self, stmt: Select[T], user_id: UUID) -> Select[T]:
         """Фильтр: показывать только дела где текущий эксперт назначен."""
         return stmt.where(Case.id.in_(select(case_experts.c.case_id).where(case_experts.c.user_id == user_id)))
@@ -60,8 +58,6 @@ class CaseService:
         if not case:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Дело не найдено")
         return case
-
-    # ── Financial Summary ─────────────────────────────────────────────────────
 
     async def get_financial_summary(self, user_id: UUID, user_role: UserRole, company_id: UUID) -> FinancialSummaryResponse:
         now = datetime.now(ZoneInfo("UTC"))
@@ -152,8 +148,6 @@ class CaseService:
             ],
         )
 
-    # ── Create ────────────────────────────────────────────────────────────────
-
     async def create_case(self, case_data: CaseCreateRequest, user_id: UUID, user_role: UserRole, company_id: UUID) -> CaseResponse:
         if user_role == UserRole.EXPERT:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Эксперт не может создавать новые дела")
@@ -221,8 +215,6 @@ class CaseService:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Ошибка при сохранении дела и структуры документов"
             ) from db_error
-
-    # ── Get Details ───────────────────────────────────────────────────────────
 
     async def get_case_details(self, case_id: UUID, user_id: UUID, user_role: str, company_id: UUID) -> CaseDetailsResponse:
         stmt = (
@@ -297,8 +289,6 @@ class CaseService:
         await self.db.refresh(case)
         return self._to_case_response(case)
 
-    # ── Assign Experts ────────────────────────────────────────────────────────
-
     async def assign_experts(self, case_id: UUID, data: AssignExpertsRequest, user_role: UserRole, company_id: UUID) -> CaseResponse:
         """Полностью заменяет список экспертов на дело."""
         if user_role == UserRole.EXPERT:
@@ -334,18 +324,14 @@ class CaseService:
         await self.db.commit()
         return True
 
-    # ── Get Cases (list) ──────────────────────────────────────────────────────
-
     async def get_cases(self, query_params: GetCasesQuery, user_id: UUID, user_role: UserRole, company_id: UUID) -> GetCasesResponse:
         base_where = [Case.deleted_at.is_(None), Case.company_id == company_id]
 
-        # Эксперт видит только свои дела
         expert_subquery = None
         if user_role == UserRole.EXPERT:
             expert_subquery = select(case_experts.c.case_id).where(case_experts.c.user_id == user_id)
             base_where.append(Case.id.in_(expert_subquery))
 
-        # Фильтр по конкретному эксперту (для менеджера/админа)
         if query_params.expert_id:
             expert_id_subquery = select(case_experts.c.case_id).where(case_experts.c.user_id == query_params.expert_id)
             base_where.append(Case.id.in_(expert_id_subquery))

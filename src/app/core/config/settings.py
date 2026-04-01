@@ -1,3 +1,5 @@
+import uuid
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,6 +20,14 @@ class Settings(BaseSettings):
     ADMIN_EMAIL: str
     ADMIN_FULL_NAME: str
     ADMIN_PASSWORD: str
+
+    MAIL_EMAIL: str
+    MAIL_PASSWORD: str
+    MAIL_IMAP_HOST: str = "imap.yandex.ru"
+    MAIL_IMAP_PORT: int = 993
+    MAIL_SMTP_HOST: str = "smtp.yandex.ru"
+    MAIL_SMTP_PORT: int = 465
+    MAIL_COMPANY_ID: uuid.UUID
 
 
 settings = Settings()
