@@ -90,6 +90,22 @@ class MailAttachmentResponse(_Base):
     size: int
 
 
+class MailAttachmentListItem(_Base):
+    """Элемент списка вложений для отображения в списке."""
+
+    id: uuid.UUID
+    filename: str
+    content_type: str
+    file_size: int
+    created_at: datetime
+    mail_message_id: uuid.UUID
+    message_subject: str | None
+    message_sender_email: str
+    message_sender_name: str | None
+    message_type: MailMessageType
+    folder: MailFolder
+
+
 class MailRecipientCreate(MailRecipientBase):
     pass
 

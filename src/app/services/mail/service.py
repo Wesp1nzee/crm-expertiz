@@ -38,7 +38,9 @@ from src.app.services.mail.models import (
     new_token,
 )
 from src.app.services.mail.schemas import (
+    MailAttachmentListItem,
     MailAttachmentRead,
+    MailAttachmentType,
     MailContentCreate,
     MailListItem,
     MailMessageBulkAction,
@@ -781,6 +783,118 @@ class MailAttachmentService(_MailBase):
         stmt = select(MailAttachment).where(MailAttachment.mail_message_id == message_id, MailAttachment.batch_id.is_(None))
         rows = await self._db.scalars(stmt)
         return [MailAttachmentRead.model_validate(a) for a in rows.all()]
+
+    async def list_attachments(
+        self,
+        *,
+        mail_attachment_type: MailAttachmentType,
+        search: str | None = None,
+        sort_by: str = "created_at",
+        order: str = "desc",
+        page: int = 1,
+        page_size: int = 25,
+    ) -> PaginatedResponse[MailAttachmentListItem]:
+        """
+        Получить список вложений с фильтрацией по типу (Все, Входящие, Отправленные).
+
+        Args:
+            mail_attachment_type: Тип вложений (ALL, INCOMING, OUTGOING)
+            search: Поиск по названию файла
+            sort_by: Поле сортировки (filename, created_at, file_size)
+            order: Порядок сортировки (asc, desc)
+            page: Номер страницы
+            page_size: Размер страницы
+
+        Returns:
+            PaginatedResponse[MailAttachmentListItem]: Список вложений с пагинацией
+        """
+        self._check_access()
+
+        # Build base query with joins
+        stmt = (
+            select(
+                MailAttachment,
+                MailMessage.subject.label("message_subject"),
+                MailMessage.sender_email.label("message_sender_email"),
+                MailMessage.sender_name.label("message_sender_name"),
+                MailMessage.message_type.label("message_type"),
+                MailMessage.folder.label("folder"),
+            )
+            .join(MailMessage, MailAttachment.mail_message_id == MailMessage.id)
+            .where(
+                self._base_filter(),
+                MailAttachment.batch_id.is_(None),  # Exclude oversized batches
+            )
+        )
+
+        # Filter by attachment type
+        if mail_attachment_type == MailAttachmentType.INCOMING:
+            stmt = stmt.where(MailMessage.message_type == MailMessageType.INCOMING)
+        elif mail_attachment_type == MailAttachmentType.OUTGOING:
+            stmt = stmt.where(MailMessage.message_type == MailMessageType.OUTGOING)
+        # ALL - no filter
+
+        # Search filter
+        if search:
+            stmt = stmt.where(MailAttachment.filename.ilike(f"%{search}%"))
+
+        # Get total count
+        total_query = select(func.count()).select_from(stmt.subquery())
+        total: int = await self._db.scalar(total_query) or 0
+
+        # Apply sorting
+        sort_column_map = {
+            "filename": MailAttachment.filename,
+            "created_at": MailAttachment.created_at,
+            "file_size": MailAttachment.file_size,
+        }
+        sort_column = sort_column_map.get(sort_by, MailAttachment.created_at)
+        if order == "desc":
+            stmt = stmt.order_by(desc(sort_column))
+        else:
+            stmt = stmt.order_by(sort_column.asc())
+
+        # Apply pagination
+        offset = (page - 1) * page_size
+        stmt = stmt.offset(offset).limit(page_size)
+
+        # Execute query
+        rows = await self._db.execute(stmt)
+
+        # Build response items
+        items: list[MailAttachmentListItem] = []
+        for row in rows.all():
+            attachment = row[0]
+            items.append(
+                MailAttachmentListItem(
+                    id=attachment.id,
+                    filename=attachment.filename,
+                    content_type=attachment.content_type,
+                    file_size=attachment.file_size,
+                    created_at=attachment.created_at,
+                    mail_message_id=attachment.mail_message_id,
+                    message_subject=row.message_subject,
+                    message_sender_email=row.message_sender_email,
+                    message_sender_name=row.message_sender_name,
+                    message_type=row.message_type,
+                    folder=row.folder,
+                )
+            )
+
+        # Calculate pagination
+        total_pages = (total + page_size - 1) // page_size if total > 0 else 0
+
+        return PaginatedResponse(
+            items=items,
+            meta=PaginationMeta(
+                total_items=total,
+                total_pages=total_pages,
+                current_page=page,
+                per_page=page_size,
+                has_next=page < total_pages,
+                has_prev=page > 1,
+            ),
+        )
 
     # async def get_list_attachments_files(self, mail_attachment: MailAttachment) -> list[MailAttachmentRead]: ...
 

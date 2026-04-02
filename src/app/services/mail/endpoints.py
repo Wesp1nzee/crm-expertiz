@@ -15,7 +15,9 @@ from src.app.core.database.session import get_db
 from src.app.core.schemas.base import PaginatedResponse
 from src.app.services.mail.models import MailFolder
 from src.app.services.mail.schemas import (
+    MailAttachmentListItem,
     MailAttachmentRead,
+    MailAttachmentType,
     MailListItem,
     MailMessageBulkAction,
     MailMessageBulkResult,
@@ -82,13 +84,6 @@ async def list_threads(
         page=page,
         page_size=page_size,
     )
-
-
-# @router.get("/attachments", response_model=PaginatedResponse[MailAttachmentRead])
-# async def list_attachments_fiels(
-#     svc: _Service,
-#     message_id: uuid.UUID = Path(...),
-# ) -> PaginatedResponse[MailAttachmentRead]: ...
 
 
 @router.get("/messages/search", response_model=PaginatedMailMessages)
@@ -281,6 +276,40 @@ async def list_attachments(
     message_id: uuid.UUID = Path(...),
 ) -> list[MailAttachmentRead]:
     return await svc.get_list_attachments(message_id)
+
+
+@router.get("/attachments", response_model=PaginatedResponse[MailAttachmentListItem])
+async def list_all_attachments(
+    svc: _Service,
+    mail_attachment_type: MailAttachmentType = Query(default=MailAttachmentType.ALL, description="Тип вложений: all, incoming, outgoing"),
+    search: str | None = Query(default=None, description="Поиск по названию файла"),
+    sort_by: str = Query(default="created_at", description="Поле сортировки: filename, created_at, file_size"),
+    order: str = Query(default="desc", pattern="^(asc|desc)$", description="Порядок сортировки"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=25, ge=1, le=100),
+) -> PaginatedResponse[MailAttachmentListItem]:
+    """
+    Получить список вложений с фильтрацией по типу (Все, Входящие, Отправленные).
+
+    Возвращает:
+    - filename: название файла
+    - message_url: ссылка на письмо (message_id)
+    - created_at: дата вложения
+    - file_size: размер файла
+    - message_subject: тема письма
+    - message_sender_email: email отправителя письма
+    - message_sender_name: имя отправителя письма
+    - message_type: тип сообщения (incoming/outgoing)
+    - folder: папка письма
+    """
+    return await svc.list_attachments(
+        mail_attachment_type=mail_attachment_type,
+        search=search,
+        sort_by=sort_by,
+        order=order,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @router.get(
