@@ -814,6 +814,7 @@ class MailAttachmentService(_MailBase):
         stmt = (
             select(
                 MailAttachment,
+                MailMessage.thread_id.label("thread_id"),
                 MailMessage.subject.label("message_subject"),
                 MailMessage.sender_email.label("message_sender_email"),
                 MailMessage.sender_name.label("message_sender_name"),
@@ -872,7 +873,7 @@ class MailAttachmentService(_MailBase):
                     content_type=attachment.content_type,
                     file_size=attachment.file_size,
                     created_at=attachment.created_at,
-                    mail_message_id=attachment.mail_message_id,
+                    thread_id=row.thread_id,
                     message_subject=row.message_subject,
                     message_sender_email=row.message_sender_email,
                     message_sender_name=row.message_sender_name,

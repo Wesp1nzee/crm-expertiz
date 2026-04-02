@@ -29,5 +29,7 @@ class Settings(BaseSettings):
     MAIL_SMTP_PORT: int = 465
     MAIL_COMPANY_ID: uuid.UUID
 
+    DADATA_API_KEY: str
+
 
 settings = Settings()

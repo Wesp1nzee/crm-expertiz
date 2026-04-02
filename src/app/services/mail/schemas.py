@@ -98,7 +98,7 @@ class MailAttachmentListItem(_Base):
     content_type: str
     file_size: int
     created_at: datetime
-    mail_message_id: uuid.UUID
+    thread_id: uuid.UUID
     message_subject: str | None
     message_sender_email: str
     message_sender_name: str | None

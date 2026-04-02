@@ -18,6 +18,7 @@ from src.app.services.calendar.endpoints import router as calendar_router
 from src.app.services.case.endpoints import router as cases_router
 from src.app.services.client.endpoints import router as client_router
 from src.app.services.company.endpoints import router as company_router
+from src.app.services.dadata.endpoints import router as dadata_router
 from src.app.services.document.endpoints import router as document_router
 from src.app.services.mail.endpoints import router as mail_router
 from src.app.services.mail.imap_worker import ImapFolderPoller, ImapIdleWorker
@@ -120,6 +121,7 @@ app.include_router(company_router)
 app.include_router(calendar_router)
 app.include_router(share_router)
 app.include_router(mail_router)
+app.include_router(dadata_router)
 
 
 if __name__ == "__main__":
