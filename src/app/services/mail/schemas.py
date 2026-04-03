@@ -386,3 +386,17 @@ class EmailContactRead(_Base):
 class EmailContactAutocompleteResponse(_Base):
     items: list[EmailContactRead]
     total: int
+
+
+class LinkMailToCaseRequest(_Base):
+    """Request schema for linking a mail message to a case."""
+
+    case_id: uuid.UUID
+
+
+class LinkMailToCaseResponse(_Base):
+    """Response schema for linking a mail message to a case."""
+
+    message_id: uuid.UUID
+    case_id: uuid.UUID
+    success: bool

@@ -136,6 +136,39 @@ class MailMessageResponse(BaseModel):
     created_at: datetime
 
 
+class MailMessageDetailResponse(BaseModel):
+    """Detailed mail response for case details view."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    external_message_id: str | None
+    thread_id: uuid.UUID | None
+    parent_id: uuid.UUID | None
+    user_id: uuid.UUID
+    case_id: uuid.UUID | None
+    sender_email: str
+    sender_name: str | None
+    reply_to: str | None
+    subject: str | None
+    folder: str
+    message_type: str
+    status: str
+    is_read: bool
+    is_important: bool
+    is_starred: bool
+    is_spam: bool
+    is_archived: bool
+    is_deleted: bool
+    size_bytes: int | None
+    sent_at: datetime | None
+    processed_at: datetime
+    updated_at: datetime
+    body_text: str | None = None
+    body_html: str | None = None
+    attachment_count: int = 0
+
+
 # ── Case Schemas ──────────────────────────────────────────────────────────────
 
 
@@ -279,7 +312,7 @@ class CaseDetailsResponse(BaseModel):
     client: ClientResponse
     experts: list[UserResponse] = Field(default_factory=list)
     documents: list[DocumentResponse] = Field(default_factory=list)
-    events: list[MailMessageResponse] = Field(default_factory=list)
+    messages: list[MailMessageDetailResponse] = Field(default_factory=list)
     folders: list[FolderResponse] = Field(default_factory=list)
 
 

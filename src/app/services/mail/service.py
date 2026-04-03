@@ -7,6 +7,7 @@ import uuid
 import zipfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import HTTPException, UploadFile, status
 from sqlalchemy import and_, delete, desc, func, or_, select, update
@@ -1371,7 +1372,121 @@ class MailOversizedService(_MailBase):
         )
 
 
-class MailService(MailSendService, MailDraftService, MailThreadService, MailAttachmentService, MailSyncService, MailMessageService):
+class MailCaseLinkService(_MailBase):
+    """Service methods for linking mail messages to cases."""
+
+    async def link_mail_to_case(self, message_id: uuid.UUID, case_id: uuid.UUID) -> tuple[bool, str]:
+        """
+        Link a mail message to a case.
+        Returns (success, message) tuple.
+        """
+        self._check_access()
+
+        await self._get_or_404(message_id)
+
+        from src.app.services.case.models import Case
+
+        case_stmt = select(Case).where(
+            Case.id == case_id,
+            Case.company_id == self._company_id,
+            Case.deleted_at.is_(None),
+        )
+        case = await self._db.scalar(case_stmt)
+        if not case:
+            return False, "Дело не найдено или удалено"
+
+        await self._db.execute(update(MailMessage).where(MailMessage.id == message_id).values(case_id=case_id, updated_at=datetime.now(UTC)))
+        await self._db.commit()
+
+        return True, "Письмо успешно связано с делом"
+
+    async def unlink_mail_from_case(self, message_id: uuid.UUID) -> tuple[bool, str]:
+        """
+        Unlink a mail message from its case.
+        Returns (success, message) tuple.
+        """
+        self._check_access()
+
+        msg = await self._get_or_404(message_id)
+
+        if msg.case_id is None:
+            return False, "Письмо не связано с делом"
+
+        await self._db.execute(update(MailMessage).where(MailMessage.id == message_id).values(case_id=None, updated_at=datetime.now(UTC)))
+        await self._db.commit()
+
+        return True, "Письмо успешно отвязано от дела"
+
+    async def get_case_mail_messages(
+        self,
+        case_id: uuid.UUID,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> dict[str, Any]:
+        """
+        Get all mail messages linked to a case with pagination.
+        Returns dict with items, total, page, page_size, has_next.
+        """
+        self._check_access()
+
+        from src.app.services.case.models import Case
+
+        case_stmt = select(Case).where(
+            Case.id == case_id,
+            Case.company_id == self._company_id,
+            Case.deleted_at.is_(None),
+        )
+        case = await self._db.scalar(case_stmt)
+        if not case:
+            raise HTTPException(status_code=404, detail="Дело не найдено или удалено")
+
+        total = (
+            await self._db.scalar(
+                select(func.count())
+                .select_from(MailMessage)
+                .where(
+                    MailMessage.case_id == case_id,
+                    MailMessage.company_id == self._company_id,
+                    MailMessage.is_deleted.is_(False),
+                )
+            )
+            or 0
+        )
+
+        offset = (page - 1) * page_size
+        messages = await self._db.scalars(
+            select(MailMessage)
+            .where(
+                MailMessage.case_id == case_id,
+                MailMessage.company_id == self._company_id,
+                MailMessage.is_deleted.is_(False),
+            )
+            .options(*_DETAIL_OPTS)
+            .order_by(MailMessage.sent_at.desc().nullslast())
+            .offset(offset)
+            .limit(page_size)
+        )
+
+        from src.app.services.mail.schemas import MailMessageRead
+
+        return {
+            "items": [MailMessageRead.model_validate(m) for m in messages.all()],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "has_next": (offset + page_size) < total,
+        }
+
+
+class MailService(
+    MailSendService,
+    MailDraftService,
+    MailThreadService,
+    MailAttachmentService,
+    MailSyncService,
+    MailMessageService,
+    MailCaseLinkService,
+):
     """
     Unified mail service.
     Inherits all domain sub-services. Python's MRO guarantees that

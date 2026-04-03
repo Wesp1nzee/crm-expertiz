@@ -557,7 +557,7 @@ class ImapFolderPoller:
         client = aioimaplib.IMAP4_SSL(
             host=app_settings.MAIL_IMAP_HOST,
             port=app_settings.MAIL_IMAP_PORT,
-            timeout=30,
+            timeout=60,
         )
         try:
             await client.wait_hello_from_server()
@@ -609,7 +609,10 @@ class ImapFolderPoller:
                     break
                 seq = seq_bytes.decode()
                 try:
-                    fetch_resp = await client.fetch(seq, "(UID FLAGS BODY.PEEK[])")
+                    fetch_resp = await self._fetch_with_retry(client, seq, folder.value)
+                    if fetch_resp is None:
+                        continue
+
                     if fetch_resp[0] != "OK":
                         continue
 
@@ -654,6 +657,44 @@ class ImapFolderPoller:
 
         except Exception as e:
             log.exception(f"ImapFolderPoller [{folder.value}]: folder sync failed: {e}")
+
+    async def _fetch_with_retry(
+        self,
+        client: aioimaplib.IMAP4_SSL,
+        seq: str,
+        folder_name: str,
+        max_retries: int = 3,
+    ) -> list[Any] | None:  # noqa: ANN401
+        """Выполняет fetch с повторными попытками при таймаутах и ошибках соединения."""
+
+        for attempt in range(max_retries):
+            try:
+                fetch_resp: list[Any] = await client.fetch(seq, "(UID FLAGS BODY.PEEK[])")
+                return fetch_resp
+            except aioimaplib.aioimaplib.CommandTimeout:
+                log.warning(f"ImapFolderPoller [{folder_name}]: fetch timeout on seq={seq}, attempt {attempt + 1}/{max_retries}")
+                if attempt < max_retries - 1:
+                    delay = 2 ** (attempt + 1)
+                    log.info(f"ImapFolderPoller [{folder_name}]: retrying in {delay}s...")
+                    await asyncio.sleep(delay)
+                else:
+                    log.error(f"ImapFolderPoller [{folder_name}]: fetch failed after {max_retries} attempts on seq={seq}")
+            except Exception as e:
+                error_str = str(e).lower()
+
+                if "closed" in error_str or "ssl" in error_str:
+                    log.warning(f"ImapFolderPoller [{folder_name}]: connection closed on seq={seq}, re-raising to trigger reconnect")
+                    raise
+
+                log.warning(f"ImapFolderPoller [{folder_name}]: error on seq={seq}, attempt {attempt + 1}/{max_retries}: {e}")
+                if attempt < max_retries - 1:
+                    delay = 2 ** (attempt + 1)
+                    await asyncio.sleep(delay)
+                else:
+                    log.error(f"ImapFolderPoller [{folder_name}]: fetch failed after {max_retries} attempts on seq={seq}")
+
+        log.warning(f"ImapFolderPoller [{folder_name}]: skipping seq={seq} after {max_retries} failed attempts")
+        return None
 
     async def _get_last_uid(self, folder: MailFolder) -> int:
         async with self._factory() as session:

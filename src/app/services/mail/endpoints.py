@@ -4,7 +4,7 @@ import json
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Path, Query, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Path, Query, Response, UploadFile, status
 from fastapi import Form as FastAPIForm
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +15,8 @@ from src.app.core.database.session import get_db
 from src.app.core.schemas.base import PaginatedResponse
 from src.app.services.mail.models import MailFolder
 from src.app.services.mail.schemas import (
+    LinkMailToCaseRequest,
+    LinkMailToCaseResponse,
     MailAttachmentListItem,
     MailAttachmentRead,
     MailAttachmentType,
@@ -450,20 +452,57 @@ async def get_all_urls(svc: _ServiceOversized, token: str = Path(...)) -> Oversi
     return await svc.get_all_download_urls(token)
 
 
-# @router.get(
-#     "/contacts/autocomplete",
-#     response_model=EmailContactAutocompleteResponse,
-#     summary="Автокомплит email-адресов",
-#     description=(
-#         "Возвращает список email-адресов по префиксу или части имени. "
-#         "Используется при вводе получателя в форме отправки письма. "
-#         "Поиск работает по email (префикс) и имени (вхождение). "
-#         "Сортировка: наиболее часто используемые — первыми."
-#     ),
-# )
-# async def autocomplete_contacts(
-#     svc: _Service,
-#     q: str = Query(min_length=1, max_length=100, description="Строка поиска: начало email или часть имени"),
-#     limit: int = Query(default=10, ge=1, le=50, description="Максимальное количество результатов"),
-# ) -> EmailContactAutocompleteResponse:
-#     return await svc.autocomplete(q=q, limit=limit)
+@router.post(
+    "/messages/{message_id}/link-to-case",
+    response_model=LinkMailToCaseResponse,
+    summary="Привязать письмо к делу",
+    description="Связывает почтовое сообщение с делом (case).",
+)
+async def link_mail_to_case(
+    svc: _Service,
+    message_id: uuid.UUID = Path(...),
+    payload: LinkMailToCaseRequest = Depends(),
+) -> LinkMailToCaseResponse:
+    success, message = await svc.link_mail_to_case(message_id, payload.case_id)
+    if not success:
+        raise HTTPException(status_code=404, detail=message)
+    return LinkMailToCaseResponse(
+        message_id=message_id,
+        case_id=payload.case_id,
+        success=True,
+    )
+
+
+@router.post(
+    "/messages/{message_id}/unlink-from-case",
+    summary="Отвязать письмо от дела",
+    description="Удаляет связь почтового сообщения с делом.",
+    status_code=status.HTTP_200_OK,
+)
+async def unlink_mail_from_case(
+    svc: _Service,
+    message_id: uuid.UUID = Path(...),
+) -> dict[str, bool | str]:
+    success, message = await svc.unlink_mail_from_case(message_id)
+    if not success:
+        raise HTTPException(status_code=404, detail=message)
+    return {"success": True, "message": message}
+
+
+@router.get(
+    "/cases/{case_id}/messages",
+    response_model=PaginatedMailMessages,
+    summary="Получить все письма дела",
+    description="Возвращает все почтовые сообщения, связанные с делом, с пагинацией.",
+)
+async def get_case_mail_messages(
+    svc: _Service, case_id: uuid.UUID = Path(...), page: int = Query(default=1, ge=1), page_size: int = Query(default=50, ge=1, le=200)
+) -> PaginatedMailMessages:
+    result = await svc.get_case_mail_messages(case_id, page=page, page_size=page_size)
+    return PaginatedMailMessages(
+        items=result["items"],
+        total=result["total"],
+        page=result["page"],
+        page_size=result["page_size"],
+        has_next=result["has_next"],
+    )

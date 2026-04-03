@@ -28,7 +28,7 @@ from src.app.services.case.schemas import (
     FolderResponse,
     GetCasesQuery,
     GetCasesResponse,
-    MailMessageResponse,
+    MailMessageDetailResponse,
     RecentCaseItem,
     SortField,
     SortOrder,
@@ -36,6 +36,7 @@ from src.app.services.case.schemas import (
 )
 from src.app.services.client.models import Client
 from src.app.services.document.models import Document, Folder
+from src.app.services.mail.models import MailMessage
 from src.app.services.user.models import User, UserRole
 
 T = TypeVar("T", bound=tuple[Any, ...])
@@ -98,7 +99,6 @@ class CaseService:
         past_conv = get_conv_rate(two_months_ago, month_ago)
         conv_trend = current_conv - past_conv
 
-        # Throughput: считаем уникальных экспертов через case_experts
         recent_completed = [c for c in completed_cases if c.completion_date and c.completion_date >= month_ago]
         recent_completed_ids = [c.id for c in recent_completed]
 
@@ -169,7 +169,6 @@ class CaseService:
         if not client or client.company_id != company_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Клиент с ID {case_data.client_id} не найден")
 
-        # Валидируем экспертов если переданы
         experts: list[User] = []
         if case_data.expert_ids:
             experts_result = await self.db.execute(select(User).where(User.id.in_(case_data.expert_ids), User.company_id == company_id))
@@ -222,7 +221,8 @@ class CaseService:
             .options(
                 selectinload(Case.client).selectinload(Client.contacts),
                 selectinload(Case.experts),
-                selectinload(Case.mail_messages),
+                selectinload(Case.mail_messages).selectinload(MailMessage.content),
+                selectinload(Case.mail_messages).selectinload(MailMessage.attachments),
             )
             .where(Case.id == case_id, Case.company_id == company_id)
         )
@@ -253,16 +253,50 @@ class CaseService:
         docs_result = await self.db.execute(documents_stmt)
         root_documents = docs_result.scalars().all()
 
+        mail_messages = [self._to_mail_message_detail(msg) for msg in case.mail_messages if not msg.is_deleted]
+
         return CaseDetailsResponse(
             case=self._to_case_response(case),
             client=ClientResponse.model_validate(case.client),
             experts=[UserResponse.model_validate(u) for u in case.experts],
             documents=[DocumentResponse.model_validate(doc) for doc in root_documents],
-            events=[MailMessageResponse.model_validate(msg) for msg in case.mail_messages],
+            messages=mail_messages,
             folders=[FolderResponse.model_validate(f) for f in subfolders],
         )
 
-    # ── Update ────────────────────────────────────────────────────────────────
+    def _to_mail_message_detail(self, msg: MailMessage) -> MailMessageDetailResponse:
+        """Convert MailMessage to MailMessageDetailResponse."""
+        body_text = msg.content.body_text if msg.content else None
+        body_html = msg.content.body_html if msg.content else None
+
+        return MailMessageDetailResponse(
+            id=msg.id,
+            external_message_id=msg.external_message_id,
+            thread_id=msg.thread_id,
+            parent_id=msg.parent_id,
+            user_id=msg.user_id,
+            case_id=msg.case_id,
+            sender_email=msg.sender_email,
+            sender_name=msg.sender_name,
+            reply_to=msg.reply_to,
+            subject=msg.subject,
+            folder=msg.folder.value if hasattr(msg.folder, "value") else str(msg.folder),
+            message_type=msg.message_type.value if hasattr(msg.message_type, "value") else str(msg.message_type),
+            status=msg.status.value if hasattr(msg.status, "value") else str(msg.status),
+            is_read=msg.is_read,
+            is_important=msg.is_important,
+            is_starred=msg.is_starred,
+            is_spam=msg.is_spam,
+            is_archived=msg.is_archived,
+            is_deleted=msg.is_deleted,
+            size_bytes=msg.size_bytes,
+            sent_at=msg.sent_at,
+            processed_at=msg.processed_at,
+            updated_at=msg.updated_at,
+            body_text=body_text,
+            body_html=body_html,
+            attachment_count=len(msg.attachments) if msg.attachments else 0,
+        )
 
     async def update_case(self, case_id: UUID, update_data: CaseUpdateRequest, user_role: UserRole, company_id: UUID) -> CaseResponse | None:
         if user_role == UserRole.EXPERT:
