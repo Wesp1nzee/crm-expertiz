@@ -14,6 +14,9 @@ from src.app.services.client.schemas import (
     ClientFullResponse,
     ClientShortResponse,
     ClientUpdate,
+    ContactCreate,
+    ContactResponse,
+    ContactUpdate,
     SearchResultDTO,
 )
 from src.app.services.client.service import ClientService
@@ -123,3 +126,53 @@ async def delete_client(
     service = ClientService(db)
     if not await service.delete_client(str(client_id), current_user.company_id, current_user.role):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Клиент не найден")
+
+
+@router.get("/{client_id}/contacts", response_model=list[ContactResponse])
+async def get_client_contacts(
+    client_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+) -> list[ContactResponse]:
+    """Получить все контакты клиента"""
+    service = ClientService(db)
+    contacts = await service.get_contacts(str(client_id), current_user.company_id)
+    return [ContactResponse.model_validate(c) for c in contacts]
+
+
+@router.post("/{client_id}/contacts", response_model=ContactResponse, status_code=status.HTTP_201_CREATED)
+async def create_client_contact(
+    client_id: uuid.UUID,
+    contact_data: ContactCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+) -> ContactResponse:
+    """Создать контакт для клиента"""
+    service = ClientService(db)
+    contact = await service.create_contact(str(client_id), contact_data, current_user.company_id, current_user.role)
+    return ContactResponse.model_validate(contact)
+
+
+@router.patch("/contacts/{contact_id}", response_model=ContactResponse)
+async def update_contact(
+    contact_id: uuid.UUID,
+    update_data: ContactUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+) -> ContactResponse:
+    """Обновить контакт"""
+    service = ClientService(db)
+    contact = await service.update_contact(str(contact_id), update_data, current_user.company_id, current_user.role)
+    return ContactResponse.model_validate(contact)
+
+
+@router.delete("/contacts/{contact_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_contact(
+    contact_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+) -> None:
+    """Удалить контакт"""
+    service = ClientService(db)
+    if not await service.delete_contact(str(contact_id), current_user.company_id, current_user.role):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Контакт не найден")

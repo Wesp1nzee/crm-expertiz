@@ -40,6 +40,7 @@ class Client(TenantBase):
     phone: Mapped[str | None] = mapped_column(String(50), index=True)
     legal_address: Mapped[str | None] = mapped_column(Text)  # Юридический адрес
     actual_address: Mapped[str | None] = mapped_column(Text)  # Фактический адрес
+    notes: Mapped[str | None] = mapped_column(Text)  # Примечание к клиенту
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())  # Дата обновления
     contacts: Mapped[list[Contact]] = relationship("Contact", back_populates="client", cascade="all, delete-orphan")  # Контакты клиента

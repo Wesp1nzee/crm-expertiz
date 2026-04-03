@@ -63,6 +63,7 @@ class ClientBase(BaseModel):
     phone: str | None = Field(None, max_length=50)
     legal_address: str | None = None
     actual_address: str | None = None
+    notes: str | None = Field(None, description="Примечание к клиенту")
 
 
 class ClientCreate(ClientBase):
@@ -82,6 +83,7 @@ class ClientUpdate(BaseModel):
     phone: str | None = None
     legal_address: str | None = None
     actual_address: str | None = None
+    notes: str | None = None
 
 
 class ClientShortResponse(ClientBase):
@@ -95,11 +97,30 @@ class ClientShortResponse(ClientBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+class RecentEmailResponse(BaseModel):
+    """Схема для отображения последних писем клиента"""
+
+    id: UUID
+    thread_id: UUID | None
+    subject: str | None
+    sender_email: str
+    sender_name: str | None
+    message_type: str
+    folder: str
+    is_read: bool
+    sent_at: datetime | None
+    case_id: UUID | None
+    case_number: str | None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class ClientFullResponse(ClientShortResponse):
     """Полная инфа о клиенте со всеми контактами"""
 
     updated_at: datetime
     contacts: list[ContactResponse] = []
+    recent_emails: list[RecentEmailResponse] = Field(default_factory=list, description="Последние 10 писем")
 
     model_config = ConfigDict(from_attributes=True)
 

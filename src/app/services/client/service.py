@@ -1,5 +1,6 @@
 import math
 from collections.abc import Sequence
+from typing import Any
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -10,7 +11,16 @@ from sqlalchemy.orm import selectinload
 from src.app.core.schemas import PaginatedResponse, PaginationMeta
 from src.app.services.case.models import Case
 from src.app.services.client.models import Client, Contact
-from src.app.services.client.schemas import ClientCreate, ClientFullResponse, ClientShortResponse, ClientUpdate
+from src.app.services.client.schemas import (
+    ClientCreate,
+    ClientFullResponse,
+    ClientShortResponse,
+    ClientUpdate,
+    ContactCreate,
+    ContactUpdate,
+    RecentEmailResponse,
+)
+from src.app.services.mail.models import MailMessage
 from src.app.services.user.models import UserRole
 
 
@@ -54,7 +64,80 @@ class ClientService:
         if not client:
             return None
 
-        return ClientFullResponse.model_validate(client)
+        # Собираем все email адреса клиента и его контактов
+        client_emails = set()
+        if client.email:
+            client_emails.add(client.email.lower())
+        for contact in client.contacts:
+            if contact.email:
+                client_emails.add(contact.email.lower())
+
+        # Получаем последние 10 писем, связанных с клиентом:
+        # 1. Письма, где клиент - отправитель или получатель (по email)
+        # 2. Письма, привязанные к делам клиента
+        # 3. Письма, где sender_email совпадает с email клиента
+        from src.app.services.mail.models import MailRecipient
+
+        # Подзапрос для получения писем через дела клиента
+        cases_email_subq = select(MailMessage.id).join(Case, MailMessage.case_id == Case.id).where(Case.client_id == client.id)
+
+        # Подзапрос для получения писем через email клиента (как отправитель)
+        sender_email_subq = select(MailMessage.id).where(MailMessage.sender_email.in_(list(client_emails))) if client_emails else None
+
+        # Подзапрос для получения писем через email клиента (как получатель)
+        recipient_email_subq = (
+            select(MailRecipient.message_id).where(MailRecipient.email_address.in_(list(client_emails))) if client_emails else None
+        )
+
+        or_conditions: list[Any] = [MailMessage.id.in_(cases_email_subq)]
+        if sender_email_subq is not None:
+            or_conditions.append(MailMessage.id.in_(sender_email_subq))
+        if recipient_email_subq is not None:
+            or_conditions.append(MailMessage.id.in_(recipient_email_subq))
+
+        emails_stmt = (
+            select(
+                MailMessage.id,
+                MailMessage.thread_id,
+                MailMessage.subject,
+                MailMessage.sender_email,
+                MailMessage.sender_name,
+                MailMessage.message_type,
+                MailMessage.folder,
+                MailMessage.is_read,
+                MailMessage.sent_at,
+                MailMessage.case_id,
+                Case.case_number,
+            )
+            .outerjoin(Case, MailMessage.case_id == Case.id)
+            .where(
+                MailMessage.company_id == company_id,
+                or_(*or_conditions),
+            )
+            .order_by(MailMessage.sent_at.desc())
+            .limit(10)
+        )
+        emails_result = await self.db.execute(emails_stmt)
+        recent_emails = [
+            RecentEmailResponse(
+                id=row.id,
+                thread_id=row.thread_id,
+                subject=row.subject,
+                sender_email=row.sender_email,
+                sender_name=row.sender_name,
+                message_type=row.message_type.value,
+                folder=row.folder.value,
+                is_read=row.is_read,
+                sent_at=row.sent_at,
+                case_id=row.case_id,
+                case_number=row.case_number,
+            )
+            for row in emails_result.all()
+        ]
+
+        response = ClientFullResponse.model_validate(client)
+        response.recent_emails = recent_emails
+        return response
 
     async def get_clients(
         self, company_id: UUID, page: int, limit: int, client_type: str | None = None, search: str | None = None
@@ -162,3 +245,76 @@ class ClientService:
         )
         result = await self.db.execute(stmt)
         return [(row.id, row.name) for row in result.all()]
+
+    async def create_contact(self, client_id: str, contact_data: ContactCreate, company_id: UUID, user_role: UserRole) -> Contact:
+        """Создает контакт для клиента"""
+        if user_role == UserRole.EXPERT:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Эксперт не может создавать контакты",
+            )
+
+        stmt = select(Client).where(Client.id == UUID(client_id), Client.company_id == company_id)
+        result = await self.db.execute(stmt)
+        client = result.scalars().first()
+
+        if not client:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Клиент не найден")
+
+        contact = Contact(
+            **contact_data.model_dump(exclude={"client_id"}),
+            client_id=client.id,
+            company_id=company_id,
+        )
+        self.db.add(contact)
+        await self.db.commit()
+        await self.db.refresh(contact)
+        return contact
+
+    async def get_contacts(self, client_id: str, company_id: UUID) -> Sequence[Contact]:
+        """Получает все контакты клиента"""
+        stmt = select(Contact).where(Contact.client_id == UUID(client_id), Contact.company_id == company_id)
+        result = await self.db.execute(stmt)
+        return result.scalars().all()
+
+    async def update_contact(self, contact_id: str, update_data: ContactUpdate, company_id: UUID, user_role: UserRole) -> Contact:
+        """Обновляет контакт"""
+        if user_role == UserRole.EXPERT:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Эксперт не может обновлять контакты",
+            )
+
+        stmt = select(Contact).where(Contact.id == UUID(contact_id), Contact.company_id == company_id)
+        result = await self.db.execute(stmt)
+        contact = result.scalars().first()
+
+        if not contact:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Контакт не найден")
+
+        update_dict = update_data.model_dump(exclude_unset=True)
+        for field, value in update_dict.items():
+            setattr(contact, field, value)
+
+        await self.db.commit()
+        await self.db.refresh(contact)
+        return contact
+
+    async def delete_contact(self, contact_id: str, company_id: UUID, user_role: UserRole) -> bool:
+        """Удаляет контакт"""
+        if user_role == UserRole.EXPERT:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Эксперт не может удалять контакты",
+            )
+
+        stmt = select(Contact).where(Contact.id == UUID(contact_id), Contact.company_id == company_id)
+        result = await self.db.execute(stmt)
+        contact = result.scalars().first()
+
+        if not contact:
+            return False
+
+        await self.db.delete(contact)
+        await self.db.commit()
+        return True
