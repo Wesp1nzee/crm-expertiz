@@ -15,6 +15,7 @@ from src.app.core.database.session import get_db
 from src.app.core.schemas.base import PaginatedResponse
 from src.app.services.mail.models import MailFolder
 from src.app.services.mail.schemas import (
+    EmailContactAutocompleteResponse,
     LinkMailToCaseRequest,
     LinkMailToCaseResponse,
     MailAttachmentListItem,
@@ -506,3 +507,22 @@ async def get_case_mail_messages(
         page_size=result["page_size"],
         has_next=result["has_next"],
     )
+
+
+@router.get(
+    "/contacts/autocomplete",
+    response_model=EmailContactAutocompleteResponse,
+    summary="Автодополнение email контактов",
+    description="Возвращает топ-5 контактов клиентов по префиксу email для автодополнения.",
+)
+async def autocomplete_email_contacts(
+    svc: _Service,
+    q: str = Query(min_length=1, max_length=255, description="Поисковый запрос (префикс email или имени)"),
+    limit: int = Query(default=5, ge=1, le=20, description="Количество результатов (по умолчанию 5)"),
+) -> EmailContactAutocompleteResponse:
+    """
+    Возвращает предложения для автодополнения email на основе контактов клиентов.
+
+    Поиск осуществляется по префиксу email, результаты сортируются по дате обновления.
+    """
+    return await svc.autocomplete_email_contacts(query=q, limit=limit)

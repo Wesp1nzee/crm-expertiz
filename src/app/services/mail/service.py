@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException, UploadFile, status
-from sqlalchemy import and_, delete, desc, func, or_, select, update
+from sqlalchemy import and_, delete, desc, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.sql.elements import ColumnElement
@@ -19,6 +19,7 @@ from src.app.core.auth.models import UserContext
 from src.app.core.config.settings import settings
 from src.app.core.schemas.base import PaginatedResponse, PaginationMeta
 from src.app.core.storage.s3 import s3_storage
+from src.app.services.client.models import Client, Contact
 from src.app.services.mail._internal import (
     BulkValues,
     SendContext,
@@ -39,6 +40,8 @@ from src.app.services.mail.models import (
     new_token,
 )
 from src.app.services.mail.schemas import (
+    EmailContactAutocompleteResponse,
+    EmailContactRead,
     MailAttachmentListItem,
     MailAttachmentRead,
     MailAttachmentType,
@@ -995,15 +998,32 @@ class MailMessageService(_MailBase):
             base_conditions.append(MailMessage.case_id == case_id)
         if is_important is not None:
             base_conditions.append(MailMessage.is_important == is_important)
+
         if search:
-            base_conditions.append(MailMessage.subject.ilike(f"%{search}%"))
+            search_terms = search.strip().split()
+            ts_query_parts = [f"{term}:*" for term in search_terms]
+            ts_query_str = " & ".join(ts_query_parts)
+            search_query = func.to_tsquery("russian", ts_query_str)
+            fts_condition = MailMessage.search_vector.op("@@")(search_query) | MailContent.search_vector.op("@@")(search_query)
+            base_conditions.append(fts_condition)
 
         where_clause = and_(*[c for c in base_conditions if isinstance(c, ColumnElement)])
+
         total_query = select(func.count(func.distinct(MailMessage.thread_id))).where(where_clause)
         total: int = await self._db.scalar(total_query) or 0
+
         subq = (
             select(
-                MailMessage,
+                MailMessage.id,
+                MailMessage.thread_id,
+                MailMessage.subject,
+                MailMessage.sender_name,
+                MailMessage.sender_email,
+                MailMessage.sent_at,
+                MailMessage.processed_at,
+                MailMessage.is_starred,
+                MailMessage.is_important,
+                MailMessage.is_read,
                 func.count().over(partition_by=MailMessage.thread_id).label("total_in_thread"),
                 func.count().filter(MailMessage.is_read.is_(False)).over(partition_by=MailMessage.thread_id).label("unread_in_thread"),
                 func.row_number()
@@ -1012,8 +1032,11 @@ class MailMessageService(_MailBase):
                     order_by=desc(MailMessage.sent_at),
                 )
                 .label("rn"),
-            ).where(where_clause)
+            )
+            .outerjoin(MailContent, MailContent.message_id == MailMessage.id)
+            .where(where_clause)
         ).subquery()
+
         stmt = select(subq).where(subq.c.rn == 1).order_by(desc(subq.c.sent_at)).offset((page - 1) * page_size).limit(page_size)
         rows = (await self._db.execute(stmt)).mappings().all()
         items: list[MailListItem] = []
@@ -1056,18 +1079,28 @@ class MailMessageService(_MailBase):
         page_size: int = 50,
     ) -> PaginatedMailMessages:
         self._check_access()
-        pattern = f"%{q}%"
+        # FTS поиск с поддержкой префиксов (месс -> мессенджер)
+        search_terms = q.strip().split()
+        ts_query_parts = [f"{term}:*" for term in search_terms]
+        ts_query_str = " & ".join(ts_query_parts)
+        search_query = func.to_tsquery("russian", ts_query_str)
         where_clause = and_(
             self._base_filter(),
-            or_(
-                MailMessage.subject.ilike(pattern),
-                MailContent.body_text.ilike(pattern),
-            ),
+            MailMessage.search_vector.op("@@")(search_query) | MailContent.search_vector.op("@@")(search_query),
         )
-        total: int = await self._db.scalar(select(func.count()).select_from(MailMessage).where(where_clause)) or 0
+        total: int = (
+            await self._db.scalar(
+                select(func.count(func.distinct(MailMessage.id)))
+                .select_from(MailMessage)
+                .outerjoin(MailContent, MailContent.message_id == MailMessage.id)
+                .where(where_clause)
+            )
+            or 0
+        )
         offset = (page - 1) * page_size
         rows = await self._db.scalars(
             select(MailMessage)
+            .outerjoin(MailContent, MailContent.message_id == MailMessage.id)
             .where(where_clause)
             .options(*_LIST_OPTS)
             .order_by(MailMessage.sent_at.desc().nullslast())
@@ -1210,6 +1243,49 @@ class MailMessageService(_MailBase):
         for folder, cnt in rows.all():
             stats[folder if isinstance(folder, str) else folder.value] = cnt
         return stats
+
+    async def autocomplete_email_contacts(
+        self,
+        query: str,
+        limit: int = 5,
+    ) -> EmailContactAutocompleteResponse:
+        """
+        Поиск контактов клиентов по префиксу email.
+        Возвращает топ-N результатов для автодополнения.
+        """
+        self._check_access()
+
+        stmt = (
+            select(
+                Contact.email,
+                Contact.name,
+            )
+            .join(Client, Client.id == Contact.client_id)
+            .where(
+                Client.company_id == self._company_id,
+                Contact.email.is_not(None),
+                Contact.email.ilike(f"{query}%"),
+            )
+            .order_by(desc(Contact.updated_at))
+            .limit(limit)
+        )
+
+        rows = await self._db.execute(stmt)
+        results = rows.all()
+
+        items = [
+            EmailContactRead(
+                email=row.email,
+                name=row.name,
+                usage_count=0,
+            )
+            for row in results
+        ]
+
+        return EmailContactAutocompleteResponse(
+            items=items,
+            total=len(items),
+        )
 
 
 def _to_list_item(msg: MailMessage) -> MailMessageListItem:

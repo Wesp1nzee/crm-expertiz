@@ -4,8 +4,9 @@ from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from sqlalchemy import UUID, BigInteger, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import UUID, BigInteger, Boolean, Computed, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy import Enum as SQLEnum
+from sqlalchemy.dialects.postgresql import TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.app.core.database.base import Base, TenantBase
@@ -144,8 +145,18 @@ class MailContent(Base):
     )
     body_text: Mapped[str | None] = mapped_column(Text)
     body_html: Mapped[str | None] = mapped_column(Text)
+    search_vector: Mapped[TSVECTOR] = mapped_column(
+        TSVECTOR,
+        Computed(
+            "to_tsvector('russian', coalesce(body_text, ''))",
+            persisted=True,
+        ),
+        nullable=False,
+    )
 
     message: Mapped[MailMessage] = relationship("MailMessage", back_populates="content")
+
+    __table_args__ = (Index("ix_mail_contents_search_vector", "search_vector", postgresql_using="gin"),)
 
 
 class MailRecipient(Base):
@@ -206,6 +217,19 @@ class MailMessage(TenantBase):
     processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
+    search_vector: Mapped[TSVECTOR] = mapped_column(
+        TSVECTOR,
+        Computed(
+            """
+            setweight(to_tsvector('russian', coalesce(subject, '')), 'A') ||
+            setweight(to_tsvector('russian', coalesce(sender_name, '')), 'B') ||
+            setweight(to_tsvector('russian', coalesce(sender_email, '')), 'C')
+            """,
+            persisted=True,
+        ),
+        nullable=False,
+    )
+
     # Relations
     content: Mapped[MailContent] = relationship("MailContent", back_populates="message", uselist=False, cascade="all, delete-orphan")
     recipients: Mapped[list[MailRecipient]] = relationship("MailRecipient", back_populates="message", cascade="all, delete-orphan")
@@ -220,6 +244,12 @@ class MailMessage(TenantBase):
     __table_args__ = (
         Index("ix_mail_messages_company_folder", "company_id", "folder", "is_deleted", "sent_at"),
         Index("ix_mail_messages_company_unread", "company_id", "is_read", "is_deleted"),
+        Index(
+            "ix_mail_messages_search_vector",
+            "search_vector",
+            postgresql_using="gin",
+        ),
+        Index("ix_mail_messages_thread_search", "company_id", "thread_id", "folder", "is_deleted", "sent_at"),
     )
 
 

@@ -4,7 +4,12 @@ import httpx
 from redis.asyncio import Redis
 
 from src.app.core.config.settings import settings
-from src.app.core.schemas.dadata import InnLookupResult
+from src.app.services.dadata.dadata import (
+    AddressLookupResult,
+    CourtLookupResult,
+    InnLookupResult,
+    PartyLookupResult,
+)
 
 STATUS_CODE_DESCRIPTIONS: dict[tuple[int, str], str] = {
     (101, "INDIVIDUAL"): "Отсутствует в связи со смертью",
@@ -311,6 +316,256 @@ class DadataService:
             phones=phones,
             emails=emails,
         )
+
+    async def suggest_address(
+        self,
+        query: str,
+        redis: Redis,
+        count: int = 10,
+        from_bound: str | None = None,
+        to_bound: str | None = None,
+    ) -> AddressLookupResult:
+        """
+        Поиск адресов по подсказкам.
+
+        Args:
+            query: Строка поиска (часть адреса, индекс, название города/улицы).
+            redis: Redis клиент для кэширования.
+            count: Количество результатов (по умолчанию 10, макс 20).
+            from_bound: Начальная граница поиска (например, "city").
+            to_bound: Конечная граница поиска (например, "street").
+
+        Returns:
+            AddressLookupResult со списком предложенных адресов.
+        """
+        # Ограничиваем count
+        count = min(max(count, 1), 20)
+
+        # Формируем ключ кэша
+        cache_key = f"dadata:address:{query}:{count}"
+        cached_data = await redis.get(cache_key)
+        if cached_data:
+            return AddressLookupResult.model_validate_json(cached_data)
+
+        # URL API для адресов
+        address_url = "https://suggestions.dadata.ru/suggestions/api/4_1/rs/suggest/address"
+
+        # Формируем запрос
+        request_data: dict[str, Any] = {"query": query, "count": count}
+        if from_bound:
+            request_data["from_bound"] = from_bound
+        if to_bound:
+            request_data["to_bound"] = to_bound
+
+        # Запрос к API
+        client = await self._get_client()
+        try:
+            response = await client.post(address_url, json=request_data)
+            response.raise_for_status()
+        except Exception:
+            return AddressLookupResult(suggestions=[])
+
+        data = response.json()
+        suggestions_raw = data.get("suggestions", [])
+
+        # Парсинг результатов
+        suggestions = []
+        for suggestion in suggestions_raw:
+            suggestions.append(
+                {
+                    "value": suggestion.get("value", ""),
+                    "unrestricted_value": suggestion.get("unrestricted_value", ""),
+                }
+            )
+
+        result = AddressLookupResult(suggestions=suggestions)
+
+        # Сохраняем в кэш (1 час для адресов, т.к. они могут меняться чаще)
+        await redis.set(cache_key, result.model_dump_json(), ex=3600)
+
+        return result
+
+    async def suggest_court(
+        self,
+        query: str,
+        redis: Redis,
+        count: int = 10,
+    ) -> CourtLookupResult:
+        """
+        Поиск судов по подсказкам.
+
+        Args:
+            query: Строка поиска (название, адрес суда).
+            redis: Redis клиент для кэширования.
+            count: Количество результатов (по умолчанию 10, макс 20).
+
+        Returns:
+            CourtLookupResult со списком предложенных судов.
+        """
+        count = min(max(count, 1), 20)
+
+        cache_key = f"dadata:court:{query}:{count}"
+        cached_data = await redis.get(cache_key)
+        if cached_data:
+            return CourtLookupResult.model_validate_json(cached_data)
+
+        court_url = "https://suggestions.dadata.ru/suggestions/api/4_1/rs/suggest/court"
+        request_data: dict[str, Any] = {"query": query, "count": count}
+
+        client = await self._get_client()
+        try:
+            response = await client.post(court_url, json=request_data)
+            response.raise_for_status()
+        except Exception:
+            return CourtLookupResult(suggestions=[])
+
+        data = response.json()
+        suggestions_raw = data.get("suggestions", [])
+
+        suggestions = []
+        for suggestion in suggestions_raw:
+            court_data: dict[str, Any] = suggestion.get("data", {})
+            suggestions.append(
+                {
+                    "value": suggestion.get("value", ""),
+                    "unrestricted_value": suggestion.get("unrestricted_value", ""),
+                    "code": court_data.get("code", ""),
+                    "name": court_data.get("name", ""),
+                    "inn": court_data.get("inn"),
+                    "court_type": court_data.get("court_type", ""),
+                    "court_type_name": court_data.get("court_type_name", ""),
+                    "address": court_data.get("address"),
+                    "legal_address": court_data.get("legal_address"),
+                    "website": court_data.get("website"),
+                }
+            )
+
+        result = CourtLookupResult(suggestions=suggestions)
+        await redis.set(cache_key, result.model_dump_json(), ex=3600)
+
+        return result
+
+    async def suggest_party(
+        self,
+        query: str,
+        redis: Redis,
+        count: int = 10,
+        party_type: str | None = None,
+        status: list[str] | None = None,
+        okved: list[str] | None = None,
+    ) -> PartyLookupResult:
+        """
+        Поиск организаций по подсказкам.
+
+        Args:
+            query: Строка поиска (ИНН, название, адрес).
+            redis: Redis клиент для кэширования.
+            count: Количество результатов (по умолчанию 10, макс 20).
+            party_type: Тип организации (LEGAL/INDIVIDUAL).
+            status: Фильтр по статусу (ACTIVE, LIQUIDATING, LIQUIDATED, BANKRUPT, REORGANIZING).
+            okved: Фильтр по коду ОКВЭД.
+
+        Returns:
+            PartyLookupResult со списком предложенных организаций.
+        """
+        count = min(max(count, 1), 20)
+
+        cache_key = f"dadata:party:{query}:{count}:{party_type}:{status}:{okved}"
+        cached_data = await redis.get(cache_key)
+        if cached_data:
+            return PartyLookupResult.model_validate_json(cached_data)
+
+        party_url = "https://suggestions.dadata.ru/suggestions/api/4_1/rs/suggest/party"
+        request_data: dict[str, Any] = {"query": query, "count": count}
+        if party_type:
+            request_data["type"] = party_type
+        if status:
+            request_data["status"] = status
+        if okved:
+            request_data["okved"] = okved
+
+        client = await self._get_client()
+        try:
+            response = await client.post(party_url, json=request_data)
+            response.raise_for_status()
+        except Exception:
+            return PartyLookupResult(suggestions=[])
+
+        data = response.json()
+        suggestions_raw = data.get("suggestions", [])
+
+        suggestions = []
+        for suggestion in suggestions_raw:
+            party_data: dict[str, Any] = suggestion.get("data", {}) or {}
+            name_data: dict[str, Any] = party_data.get("name", {}) or {}
+            fio_data: dict[str, Any] = party_data.get("fio", {}) or {}
+            opf_data: dict[str, Any] = party_data.get("opf", {}) or {}
+            management_data: dict[str, Any] = party_data.get("management", {}) or {}
+            address_data: dict[str, Any] = party_data.get("address", {}) or {}
+            address_inner: dict[str, Any] = address_data.get("data", {}) or {}
+            state_data: dict[str, Any] = party_data.get("state", {}) or {}
+
+            ogrn_date = _convert_date_to_timestamp(party_data.get("ogrn_date"))
+            management_start_date = _convert_date_to_timestamp(management_data.get("start_date"))
+            state_actualty_date = _convert_date_to_timestamp(state_data.get("actuality_date"))
+            state_registration_date = _convert_date_to_timestamp(state_data.get("registration_date"))
+            state_liquidation_date = _convert_date_to_timestamp(state_data.get("liquidation_date"))
+
+            state_code = state_data.get("code")
+            org_type = party_data.get("type")
+            state_status_description = _get_status_description(state_code, org_type)
+
+            suggestions.append(
+                {
+                    "value": suggestion.get("value", ""),
+                    "unrestricted_value": suggestion.get("unrestricted_value", ""),
+                    "inn": party_data.get("inn"),
+                    "kpp": party_data.get("kpp"),
+                    "kpp_largest": party_data.get("kpp_largest"),
+                    "ogrn": party_data.get("ogrn"),
+                    "ogrn_date": ogrn_date,
+                    "hid": party_data.get("hid"),
+                    "type": party_data.get("type"),
+                    "name_full_with_opf": name_data.get("full_with_opf"),
+                    "name_short_with_opf": name_data.get("short_with_opf"),
+                    "name_full": name_data.get("full"),
+                    "name_short": name_data.get("short"),
+                    "fio_surname": fio_data.get("surname"),
+                    "fio_name": fio_data.get("name"),
+                    "fio_patronymic": fio_data.get("patronymic"),
+                    "okato": party_data.get("okato"),
+                    "oktmo": party_data.get("oktmo"),
+                    "okpo": party_data.get("okpo"),
+                    "okogu": party_data.get("okogu"),
+                    "okfs": party_data.get("okfs"),
+                    "okved": party_data.get("okved"),
+                    "okved_type": party_data.get("okved_type"),
+                    "opf_code": opf_data.get("code"),
+                    "opf_full": opf_data.get("full"),
+                    "opf_short": opf_data.get("short"),
+                    "opf_type": opf_data.get("type"),
+                    "management_name": management_data.get("name"),
+                    "management_post": management_data.get("post"),
+                    "management_start_date": management_start_date,
+                    "branch_count": party_data.get("branch_count"),
+                    "branch_type": party_data.get("branch_type"),
+                    "address_value": address_data.get("value"),
+                    "address_unrestricted_value": address_data.get("unrestricted_value"),
+                    "address_source": address_inner.get("source"),
+                    "address_qc": address_inner.get("qc"),
+                    "state_actualty_date": state_actualty_date,
+                    "state_registration_date": state_registration_date,
+                    "state_liquidation_date": state_liquidation_date,
+                    "state_status": state_data.get("status"),
+                    "state_code": state_code,
+                    "state_status_description": state_status_description,
+                }
+            )
+
+        result = PartyLookupResult(suggestions=suggestions)
+        await redis.set(cache_key, result.model_dump_json(), ex=3600)
+
+        return result
 
 
 # Инстанс сервиса
