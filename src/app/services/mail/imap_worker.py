@@ -199,7 +199,6 @@ class ImapIdleWorker:
         if user is None:
             raise RuntimeError(f"No user found for email={app_settings.ADMIN_EMAIL}")
         self._user_id = user.id
-        self._company_id = user.company_id
 
     async def _connect(self) -> None:
         log.info(f"ImapIdleWorker [INBOX]: connecting to {app_settings.MAIL_IMAP_HOST}...")
@@ -742,7 +741,6 @@ class ImapFolderPoller:
         if user is None:
             raise RuntimeError(f"No user found for email={app_settings.ADMIN_EMAIL}")
         self._user_id = user.id
-        self._company_id = user.company_id
 
 
 class ImapSyncer:
