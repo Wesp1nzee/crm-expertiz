@@ -48,13 +48,13 @@ class Client(TenantBase):
     company: Mapped[Company] = relationship("Company", back_populates="clients")
 
     __table_args__ = (
-        Index("ix_clients_company_id_type", "company_id", "type"),  # Фильтр клиентов по типу в рамках компании
-        Index("ix_clients_company_id_created_at", "company_id", "created_at"),  # Хронология клиентов
-        Index("ix_clients_name_prefix", "name", postgresql_ops={"name": "text_pattern_ops"}),  # Поиск по префиксу имени
-        Index(
-            "ix_clients_short_name_prefix", "short_name", postgresql_ops={"short_name": "text_pattern_ops"}
-        ),  # Поиск по префиксу краткого имени
-        Index("ix_clients_company_id_inn", "company_id", "inn"),  # Уникальность ИНН в рамках компании
+        Index("ix_clients_company_id_type", "company_id", "type"),
+        Index("ix_clients_company_id_created_at", "company_id", "created_at"),
+        Index("ix_clients_company_id_inn", "company_id", "inn"),
+        Index("ix_clients_name_prefix", "name", postgresql_ops={"name": "text_pattern_ops"}),
+        Index("ix_clients_short_name_prefix", "short_name", postgresql_ops={"short_name": "text_pattern_ops"}),
+        Index("ix_clients_name_trgm", "name", postgresql_using="gin", postgresql_ops={"name": "gin_trgm_ops"}),
+        Index("ix_clients_short_name_trgm", "short_name", postgresql_using="gin", postgresql_ops={"short_name": "gin_trgm_ops"}),
     )
 
 

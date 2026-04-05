@@ -27,12 +27,13 @@ router = APIRouter(prefix="/api/clients", tags=["Clients"])
 
 @router.get("/suggest", response_model=list[SearchResultDTO])
 async def suggest_clients(
-    q: str = Query(..., min_length=2),
+    q: str = Query(default=""),
+    limit: int = Query(default=10, ge=1, le=50),
     db: AsyncSession = Depends(get_db),
     current_user: UserContext = Depends(get_current_user),
 ) -> list[SearchResultDTO]:
     service = ClientService(db)
-    results = await service.search_name(q, current_user.company_id)
+    results = await service.search_name(q, current_user.company_id, limit=limit)
     return [SearchResultDTO(id=r[0], name=r[1]) for r in results]
 
 

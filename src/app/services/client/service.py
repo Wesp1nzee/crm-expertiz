@@ -7,6 +7,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from sqlalchemy.sql.elements import ColumnElement
 
 from src.app.core.schemas import PaginatedResponse, PaginationMeta
 from src.app.services.case.models import Case
@@ -229,20 +230,50 @@ class ClientService:
         await self.db.commit()
         return True
 
-    async def search_name(self, query: str, company_id: UUID) -> Sequence[tuple[UUID, str]]:
-        """Быстрый поиск по названию для выпадающих списков"""
-        search_pattern = f"{query}%"
+    async def search_name(self, query: str, company_id: UUID, limit: int = 10) -> Sequence[tuple[UUID, str]]:
+        q = query.strip().upper()
+        if not q:
+            stmt = select(Client.id, Client.name).where(Client.company_id == company_id).order_by(Client.created_at.desc()).limit(5)
+            result = await self.db.execute(stmt)
+            return [(row.id, row.name) for row in result.all()]
+
+        prefix_pattern = f"{q}%"
+        word_pattern = f"% {q}%"
+        contains_pattern = f"%{q}%"
+
+        name_up = func.upper(Client.name)
+        short_name_up = func.coalesce(func.upper(Client.short_name), "")
+
+        def bool_to_float(condition: ColumnElement[bool]) -> ColumnElement[float]:
+            return case((condition, 1.0), else_=0.0)
+
+        relevance = (
+            bool_to_float(or_(name_up.ilike(prefix_pattern), short_name_up.ilike(prefix_pattern))) * 4
+            + bool_to_float(or_(name_up.ilike(word_pattern), short_name_up.ilike(word_pattern))) * 3
+            + bool_to_float(or_(name_up.ilike(contains_pattern), short_name_up.ilike(contains_pattern))) * 2
+            + func.greatest(
+                func.similarity(name_up, q),
+                func.coalesce(func.similarity(func.upper(Client.short_name), q), 0.0),
+            )
+        )
+
         stmt = (
             select(Client.id, Client.name)
             .where(
                 Client.company_id == company_id,
                 or_(
-                    Client.name.ilike(search_pattern),
-                    Client.short_name.ilike(search_pattern),
+                    name_up.ilike(contains_pattern),
+                    short_name_up.ilike(contains_pattern),
+                    name_up.ilike(word_pattern),
+                    short_name_up.ilike(word_pattern),
+                    func.similarity(name_up, q) > 0.2,
+                    func.similarity(short_name_up, q) > 0.2,
                 ),
             )
-            .limit(10)
+            .order_by(relevance.desc(), Client.name.asc())
+            .limit(limit)
         )
+
         result = await self.db.execute(stmt)
         return [(row.id, row.name) for row in result.all()]
 
