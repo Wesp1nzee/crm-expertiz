@@ -78,8 +78,6 @@ class Case(TenantBase):
     plaintiff: Mapped[str | None] = mapped_column(Text, index=True)
     defendant: Mapped[str | None] = mapped_column(Text, index=True)
     judge_name: Mapped[str | None] = mapped_column(Text, index=True)
-    expert_painting: Mapped[str | None] = mapped_column(Text)
-    archive_status: Mapped[str | None] = mapped_column(Text)
     remarks: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

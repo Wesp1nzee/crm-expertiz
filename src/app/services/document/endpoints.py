@@ -39,7 +39,10 @@ router = APIRouter(prefix="/api/documents", tags=["Documents"])
     status_code=status.HTTP_200_OK,
     summary="Получить список файлов и папок",
     description=(
-        "Возвращает объединённый список папок и файлов с пагинацией. Если передан search — ищет глобально, иначе показывает содержимое папки."
+        "Возвращает объединённый список папок и файлов с пагинацией. "
+        "По умолчанию показывает только файлы и папки пользователя. "
+        "Параметр `scope` позволяет переключаться между своими и общими файлами (только для CEO и ACCOUNTANT). "
+        "Если передан search — ищет глобально, иначе показывает содержимое папки."
     ),
 )
 async def list_assets(
@@ -49,6 +52,9 @@ async def list_assets(
     search: str | None = Query(None, description="Поиск по названию"),
     sort_by: str = Query("created_at", description="Поле сортировки: name, created_at, size"),
     order: str = Query("desc", pattern="^(asc|desc)$"),
+    scope: str = Query(
+        "my", pattern="^(my|all)$", description="Область просмотра: my — свои файлы, all — все файлы компании (только CEO/ACCOUNTANT)"
+    ),
     page: int = Query(1, ge=1),
     limit: int = Query(25, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
@@ -67,6 +73,7 @@ async def list_assets(
         order=order,
         user_id=current_user.id,
         user_role=current_user.role,
+        scope=scope,
     )
 
     path = request.url.path

@@ -2,10 +2,12 @@ import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import Enum
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator
 
 from src.app.core.schemas.base import PaginatedResponse, PaginationMeta
+from src.app.services.case.models import CaseStatus
 
 
 class EfficiencyMetrics(BaseModel):
@@ -36,16 +38,6 @@ class FinancialSummaryResponse(BaseModel):
     overdue_cases: int
     efficiency: EfficiencyMetrics
     recent_cases: list[RecentCaseItem]
-
-
-class CaseStatus(str, Enum):
-    archive = "archive"
-    in_work = "in_work"
-    debt = "debt"
-    executed = "executed"
-    withdrawn = "withdrawn"
-    cancelled = "cancelled"
-    fssp = "fssp"
 
 
 class ClientType(str, Enum):
@@ -221,7 +213,6 @@ class CaseUpdateRequest(BaseModel):
     cash_amount: Decimal | None = None
     remaining_debt: Decimal | None = None
     completion_date: datetime | None = None
-    archive_status: str | None = None
     remarks: str | None = None
     judge_name: str | None = None
 
@@ -267,8 +258,23 @@ class SortOrder(str, Enum):
     DESC = "desc"
 
 
+def _parse_status_list(v: object) -> list[CaseStatus] | None:
+    if v is None:
+        return None
+    if isinstance(v, str):
+        if "," in v:
+            return [CaseStatus(item.strip()) for item in v.split(",") if item.strip()]
+        return [CaseStatus(v)]
+    if isinstance(v, list):
+        return [CaseStatus(item) if isinstance(item, str) else item for item in v]
+    return None
+
+
+StatusField = Annotated[list[CaseStatus] | None, BeforeValidator(_parse_status_list)]
+
+
 class GetCasesQuery(BaseModel):
-    status: list[CaseStatus] | None = None
+    status: StatusField = None
     # Фильтр по эксперту — ищет дела где этот пользователь в списке экспертов
     expert_id: uuid.UUID | None = None
     client_id: uuid.UUID | None = None

@@ -5,6 +5,8 @@ import urllib.parse
 import uuid
 import zipfile
 from collections.abc import AsyncGenerator
+from datetime import datetime
+from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -15,7 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.app.core.auth.deps import get_current_user
 from src.app.core.auth.models import UserContext
 from src.app.core.database.session import get_db
-from src.app.services.case.models import Case
+from src.app.services.case.export_service import CaseExcelExportService
+from src.app.services.case.models import Case, CaseStatus
 from src.app.services.case.schemas import (
     AssignExpertsRequest,
     CaseCreateRequest,
@@ -26,6 +29,8 @@ from src.app.services.case.schemas import (
     FinancialSummaryResponse,
     GetCasesQuery,
     GetCasesResponse,
+    SortField,
+    SortOrder,
 )
 from src.app.services.case.service import CaseService
 from src.app.services.document.service import DocumentService
@@ -56,10 +61,63 @@ async def suggest_case(
 
 @router.get("", response_model=GetCasesResponse)
 async def get_cases(
-    params: GetCasesQuery = Depends(),
+    status_raw: str = Query(None, alias="status"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    sort_field: SortField | None = SortField.CREATED_AT,
+    sort_order: SortOrder | None = SortOrder.DESC,
+    expert_id: uuid.UUID | None = None,
+    client_id: uuid.UUID | None = None,
+    case_type: str | None = None,
+    object_type: str | None = None,
+    authority: str | None = None,
+    object_address: str | None = None,
+    number: str | None = None,
+    case_number: str | None = None,
+    search: str | None = None,
+    min_cost: Decimal | None = None,
+    max_cost: Decimal | None = None,
+    min_remaining_debt: Decimal | None = None,
+    max_remaining_debt: Decimal | None = None,
+    completion_start_date: datetime | None = None,
+    completion_end_date: datetime | None = None,
+    deadline_start_date: datetime | None = None,
+    deadline_end_date: datetime | None = None,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: UserContext = Depends(get_current_user),
 ) -> GetCasesResponse:
+    status_list: list[CaseStatus] | None = None
+    if status_raw:
+        status_list = [CaseStatus(s.strip()) for s in status_raw.split(",") if s.strip()]
+
+    params = GetCasesQuery(
+        status=status_list,
+        page=page,
+        limit=limit,
+        sort_field=sort_field,
+        sort_order=sort_order,
+        expert_id=expert_id,
+        client_id=client_id,
+        case_type=case_type,
+        object_type=object_type,
+        authority=authority,
+        object_address=object_address,
+        number=number,
+        case_number=case_number,
+        search=search,
+        min_cost=min_cost,
+        max_cost=max_cost,
+        min_remaining_debt=min_remaining_debt,
+        max_remaining_debt=max_remaining_debt,
+        completion_start_date=completion_start_date,
+        completion_end_date=completion_end_date,
+        deadline_start_date=deadline_start_date,
+        deadline_end_date=deadline_end_date,
+        start_date=start_date,
+        end_date=end_date,
+    )
     service = CaseService(db)
     return await service.get_cases(params, current_user.id, current_user.role, current_user.company_id)
 
@@ -164,4 +222,28 @@ async def download_case_documents_as_zip(
         generate_zip(),
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{encoded_filename}.zip"'},
+    )
+
+
+@router.get("/export/excel", summary="Экспорт всех дел в Excel")
+async def export_cases_to_excel(
+    db: AsyncSession = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+) -> StreamingResponse:
+    """Export all cases to Excel file. High-performance endpoint optimized for large datasets."""
+    export_service = CaseExcelExportService(db)
+
+    excel_data = await export_service.export_cases_to_excel(
+        user_id=current_user.id,
+        user_role=current_user.role,
+        company_id=current_user.company_id,
+    )
+
+    filename = f"cases_export_{current_user.company_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    encoded_filename = urllib.parse.quote(filename)
+
+    return StreamingResponse(
+        io.BytesIO(excel_data),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{encoded_filename}"'},
     )

@@ -12,6 +12,8 @@ from src.app.core.config import settings
 from src.app.core.database import all_models  # noqa: F401
 from src.app.core.database.session import AsyncSessionLocal, engine
 from src.app.core.middleware.logging import LoggingMiddleware
+from src.app.core.middleware.rate_limit import RateLimitMiddleware
+from src.app.core.monitoring.endpoints import router as monitoring_router
 from src.app.core.redis import get_redis_client
 from src.app.core.storage.s3 import s3_storage
 from src.app.services.calendar.endpoints import router as calendar_router
@@ -50,12 +52,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         print("Redis connection: OK")
     except Exception as e:
         print(f"Redis connection: FAILED | {e}")
+        raise e
 
     try:
         await s3_storage.init_bucket()
         print("S3 Storage initialization: OK")
     except Exception as e:
         print(f"S3 Storage initialization: FAILED | {e}")
+        raise e
 
     try:
         async with AsyncSessionLocal() as session:
@@ -63,6 +67,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         print("Admin initialization check: OK")
     except Exception as e:
         print(f"Admin initialization: FAILED | {e}")
+        raise e
 
     imap_idle_worker = ImapIdleWorker(
         session_factory=AsyncSessionLocal,
@@ -99,20 +104,31 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="CRM Expertiz API", lifespan=lifespan)
 
+# CORS Configuration - используем конкретные источники из настроек
+cors_origins = [origin.strip() for origin in settings.CORS_ORIGINS.split(",")]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
     allow_headers=["Content-Type"],
+)
+
+# Rate Limiting
+app.add_middleware(
+    RateLimitMiddleware,
+    rate_limit_paths=["/api/users/login"],
+    max_requests=settings.RATE_LIMIT_LOGIN_MAX_ATTEMPTS,
+    window_seconds=settings.RATE_LIMIT_LOGIN_WINDOW_SECONDS,
 )
 
 app.add_middleware(
     LoggingMiddleware,
     log_request_body=False,
     log_response_body=False,
-    skip_paths=["/health", "/docs", "/openapi.json", "/redoc"],
+    skip_paths=["/health", "/ready", "/docs", "/openapi.json", "/redoc"],
 )
+app.include_router(monitoring_router)
 app.include_router(cases_router)
 app.include_router(client_router)
 app.include_router(document_router)

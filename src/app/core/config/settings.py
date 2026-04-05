@@ -31,5 +31,12 @@ class Settings(BaseSettings):
 
     DADATA_API_KEY: str
 
+    # CORS Configuration
+    CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
+
+    # Rate Limiting
+    RATE_LIMIT_LOGIN_MAX_ATTEMPTS: int = 5
+    RATE_LIMIT_LOGIN_WINDOW_SECONDS: int = 300  # 5 минут
+
 
 settings = Settings()

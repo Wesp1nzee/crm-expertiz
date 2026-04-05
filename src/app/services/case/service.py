@@ -1,3 +1,4 @@
+import logging
 import math
 from collections.abc import Callable
 from datetime import datetime, timedelta
@@ -38,6 +39,8 @@ from src.app.services.client.models import Client
 from src.app.services.document.models import Document, Folder
 from src.app.services.mail.models import MailMessage
 from src.app.services.user.models import User, UserRole
+
+logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=tuple[Any, ...])
 
@@ -445,7 +448,6 @@ class CaseService:
             if query_params.sort_field == SortField.CLIENT_NAME:
                 sort_column = Client.name
             elif query_params.sort_field == SortField.EXPERT_NAME:
-                # Сортировка по имени первого эксперта через join
                 stmt = stmt.outerjoin(case_experts, Case.id == case_experts.c.case_id).outerjoin(User, case_experts.c.user_id == User.id)
                 sort_column = User.full_name
             else:

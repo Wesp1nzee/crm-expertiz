@@ -410,6 +410,7 @@ class DocumentService:
         order: str = "desc",
         user_id: uuid.UUID | None = None,
         user_role: UserRole | None = None,
+        scope: str = "my",
     ) -> PaginatedResponse[FileSystemEntry]:
         sort_map = {"name": "name", "created_at": "created_at", "size": "size"}
         target_sort = sort_map.get(sort_by, "created_at")
@@ -468,7 +469,7 @@ class DocumentService:
             return f_stmt, d_stmt
 
         if user_role == UserRole.EXPERT and user_id is not None:
-            # Дела эксперта через case_experts (many-to-many)
+            # Эксперты всегда видят только свои файлы + файлы, которыми поделились
             expert_case_sq = select(case_experts.c.case_id).where(case_experts.c.user_id == user_id).scalar_subquery()
 
             # Папки: созданные экспертом ИЛИ принадлежащие его делам
@@ -504,7 +505,15 @@ class DocumentService:
             combined = union_all(f_own, d_own, f_shared, d_shared).alias("entries")
 
         else:
+            # Для CEO, ACCOUNTANT и ADMIN: обработка scope параметра
+            # scope='my' - только свои файлы, scope='all' - все файлы компании (по умолчанию 'my')
             f_stmt, d_stmt = apply_filters(f_base, d_base)
+
+            if scope == "my" and user_id is not None:
+                # Фильтруем только файлы и папки текущего пользователя
+                f_stmt = f_stmt.where(Folder.created_by_id == user_id)
+                d_stmt = d_stmt.where(Document.uploaded_by_id == user_id)
+
             combined = union_all(f_stmt, d_stmt).alias("entries")
 
         total: int = (await self.db.execute(select(func.count()).select_from(combined))).scalar_one()
