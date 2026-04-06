@@ -53,7 +53,7 @@ _POLL_FOLDERS = [
     MailFolder.TRASH,
 ]
 
-_IDLE_KEEPALIVE = 28 * 60
+_IDLE_KEEPALIVE = 25 * 60
 _POLL_INTERVAL = 5 * 60
 _BACKOFF_BASE = 5
 _BACKOFF_MAX = 300
@@ -230,24 +230,27 @@ class ImapIdleWorker:
 
         while not self._stop_event.is_set():
             log.info("ImapIdleWorker [INBOX]: entering IDLE mode...")
+            idle_failed = False
 
             try:
-                idle_task = await self._client.idle_start(timeout=30)
+                idle_task = await self._client.idle_start(timeout=_IDLE_KEEPALIVE)
 
                 try:
-                    msg = await asyncio.wait_for(self._client.wait_server_push(), timeout=600)
+                    msg = await asyncio.wait_for(self._client.wait_server_push(), timeout=_IDLE_KEEPALIVE + 4 * 60)
                     log.info(f"ImapIdleWorker [INBOX]: push received: {msg}")
                 except TimeoutError:
-                    log.debug("ImapIdleWorker [INBOX]: 10 min passed, refreshing session...")
+                    log.debug("ImapIdleWorker [INBOX]: keepalive elapsed, refreshing session...")
                 finally:
-                    log.debug("ImapIdleWorker [INBOX]: exiting IDLE mode to sync...")
                     self._client.idle_done()
                     await asyncio.wait_for(idle_task, timeout=10)
 
             except Exception as e:
-                log.warning(f"ImapIdleWorker [INBOX]: IDLE failed/interrupted: {e}")
-                if "closed" in str(e).lower():
-                    raise
+                log.warning(f"ImapIdleWorker [INBOX]: IDLE failed/interrupted: {e!r}")
+                idle_failed = True  # ✅ track IDLE failure
+
+            # ✅ If IDLE failed — immediately raise to trigger reconnect
+            if idle_failed:
+                raise ConnectionError("IDLE connection lost, reconnecting")
 
             if not self._stop_event.is_set():
                 await self._fetch_new_messages(current_validity)
@@ -258,11 +261,8 @@ class ImapIdleWorker:
 
     async def _fetch_new_messages(self, current_validity: str | None) -> None:
         assert self._client is not None
-        await self._client.noop()
 
         last_uid = await self._get_last_uid()
-
-        # Используем обычный search с UID критерием
         status, resp = await self._client.search(f"UID {last_uid + 1}:*")
 
         log.info(f"ImapIdleWorker [INBOX]: DB last_uid={last_uid}, SEARCH status={status}, resp={resp}")
@@ -270,28 +270,25 @@ class ImapIdleWorker:
         if status != "OK" or not resp or not resp[0]:
             return
 
-        raw_uids = resp[0].split()
-        if not raw_uids:
+        raw_seq = resp[0].split()
+        if not raw_seq:
             return
 
-        # После search с UID-критерием приходят seq numbers — фетчим через uid("FETCH")
-        # Поэтому нужно конвертировать: делаем FETCH каждого seq и берём реальный UID из ответа
-        new_seq_numbers = []
-        for u_bytes in raw_uids:
+        seq_list = []
+        for s in raw_seq:
             try:
-                new_seq_numbers.append(int(u_bytes))
-            except ValueError:
+                seq_list.append(int(s))
+            except (ValueError, AttributeError):
                 continue
 
-        if not new_seq_numbers:
+        if not seq_list:
             return
 
-        log.info(f"ImapIdleWorker [INBOX]: PROCESSING {len(new_seq_numbers)} MESSAGES FROM SERVER: {new_seq_numbers}")
+        log.info(f"ImapIdleWorker [INBOX]: PROCESSING {len(seq_list)} messages: {seq_list}")
 
         current_max = last_uid
 
-        for seq_int in sorted(new_seq_numbers):
-            # Фетчим по seq, внутри метода извлекаем реальный UID из ответа
+        for seq_int in sorted(seq_list):
             real_uid, success = await self._process_single_message_by_seq_and_filter(str(seq_int), last_uid, MailFolder.INBOX)
             if real_uid and real_uid > current_max:
                 current_max = real_uid
@@ -362,12 +359,16 @@ class ImapIdleWorker:
     async def _process_single_message_by_uid(self, uid: str, folder: MailFolder) -> tuple[int | None, bool]:
         assert self._client is not None
         try:
-            status, fetch_resp = await self._client.uid("FETCH", uid, "(RFC822 FLAGS)")
+            status, fetch_resp = await self._client.uid("FETCH", uid, "(UID FLAGS BODY.PEEK[])")
             if status != "OK" or not fetch_resp:
                 log.error(f"FETCH FAILED for UID {uid}: status={status}")
                 return None, False
 
-            real_uid = _extract_uid_from_fetch_response(fetch_resp) or int(uid)
+            real_uid = _extract_uid_from_fetch_response(fetch_resp)
+            if real_uid is None:
+                log.error(f"Could not extract UID from fetch response for uid={uid}")
+                return None, False
+
             flags = _extract_flags_from_fetch_response(fetch_resp)
             is_read = r"\Seen" in flags
             raw = _extract_email_body(fetch_resp)
