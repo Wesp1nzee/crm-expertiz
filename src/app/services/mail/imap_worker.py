@@ -53,7 +53,7 @@ _POLL_FOLDERS = [
     MailFolder.TRASH,
 ]
 
-_IDLE_KEEPALIVE = 25 * 60
+_IDLE_KEEPALIVE = 20 * 60
 _POLL_INTERVAL = 5 * 60
 _BACKOFF_BASE = 5
 _BACKOFF_MAX = 300
@@ -236,19 +236,27 @@ class ImapIdleWorker:
                 idle_task = await self._client.idle_start(timeout=_IDLE_KEEPALIVE)
 
                 try:
-                    msg = await asyncio.wait_for(self._client.wait_server_push(), timeout=_IDLE_KEEPALIVE + 4 * 60)
+                    msg = await asyncio.wait_for(
+                        self._client.wait_server_push(),
+                        timeout=_IDLE_KEEPALIVE + 4 * 60,
+                    )
                     log.info(f"ImapIdleWorker [INBOX]: push received: {msg}")
                 except TimeoutError:
-                    log.debug("ImapIdleWorker [INBOX]: keepalive elapsed, refreshing session...")
+                    log.debug("ImapIdleWorker [INBOX]: keepalive elapsed, refreshing...")
                 finally:
                     self._client.idle_done()
-                    await asyncio.wait_for(idle_task, timeout=10)
+                    try:
+                        await asyncio.wait_for(idle_task, timeout=10)
+                    except TimeoutError as err:
+                        log.info("ImapIdleWorker [INBOX]: server closed IDLE (normal), reconnecting...")
+                        raise ConnectionError("Server closed IDLE connection") from err
 
+            except ConnectionError:
+                raise
             except Exception as e:
                 log.warning(f"ImapIdleWorker [INBOX]: IDLE failed/interrupted: {e!r}")
-                idle_failed = True  # ✅ track IDLE failure
+                idle_failed = True
 
-            # ✅ If IDLE failed — immediately raise to trigger reconnect
             if idle_failed:
                 raise ConnectionError("IDLE connection lost, reconnecting")
 
