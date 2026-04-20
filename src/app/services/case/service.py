@@ -179,7 +179,7 @@ class CaseService:
             if len(experts) != len(case_data.expert_ids):
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Один или несколько экспертов не найдены")
 
-        data = case_data.model_dump(exclude={"expert_ids"})
+        data = case_data.model_dump(exclude={"expert_ids", "expert_painting", "archive_status"})
         data["company_id"] = company_id
 
         decimal_fields = ["cost", "bank_transfer_amount", "cash_amount", "remaining_debt"]
@@ -214,6 +214,11 @@ class CaseService:
 
         except Exception as db_error:
             await self.db.rollback()
+            import logging
+            import traceback
+
+            logging.exception("CRITICAL: Ошибка при создании дела: %s", traceback.format_exc())
+
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Ошибка при сохранении дела и структуры документов"
             ) from db_error
