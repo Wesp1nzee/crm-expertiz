@@ -75,6 +75,7 @@ class Case(TenantBase):
     bank_transfer_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), server_default="0.00", default=Decimal("0.00"))
     cash_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), server_default="0.00", default=Decimal("0.00"))
     remaining_debt: Mapped[Decimal] = mapped_column(Numeric(12, 2), server_default="0.00", default=Decimal("0.00"))
+    debit: Mapped[Decimal] = mapped_column(Numeric(12, 2), server_default="0.00", default=Decimal("0.00"), index=True)
     plaintiff: Mapped[str | None] = mapped_column(Text, index=True)
     defendant: Mapped[str | None] = mapped_column(Text, index=True)
     judge_name: Mapped[str | None] = mapped_column(Text, index=True)

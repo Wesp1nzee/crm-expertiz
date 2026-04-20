@@ -182,6 +182,7 @@ class CaseBase(BaseModel):
     bank_transfer_amount: Decimal = Decimal("0.00")
     cash_amount: Decimal = Decimal("0.00")
     remaining_debt: Decimal = Decimal("0.00")
+    debit: Decimal = Decimal("0.00")
     plaintiff: str | None = None
     defendant: str | None = None
     expert_painting: str | None = None
@@ -213,6 +214,7 @@ class CaseUpdateRequest(BaseModel):
     cash_amount: Decimal | None = None
     remaining_debt: Decimal | None = None
     completion_date: datetime | None = None
+    debit: Decimal | None = None
     remarks: str | None = None
     judge_name: str | None = None
 

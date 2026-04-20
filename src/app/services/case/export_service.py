@@ -21,8 +21,6 @@ BATCH_SIZE = 1000
 
 
 class CaseExcelExportService:
-    """High-performance Excel export service for cases."""
-
     def __init__(self, db_session: AsyncSession) -> None:
         self.db = db_session
 
@@ -37,16 +35,13 @@ class CaseExcelExportService:
         wb = Workbook()
         ws = wb.active
         ws.title = "Все дела"
-
         self._setup_headers(ws)
 
         base_query = self._build_base_query(company_id, user_id, user_role, filters)
-
         total_count = await self._get_total_count(base_query)
         logger.info(f"Exporting {total_count} cases to Excel")
 
         await self._write_data_batched(ws, base_query, total_count)
-
         self._apply_formatting(ws)
 
         buffer = io.BytesIO()
@@ -79,6 +74,7 @@ class CaseExcelExportService:
                 Case.bank_transfer_amount,
                 Case.cash_amount,
                 Case.remaining_debt,
+                Case.debit,
                 Case.plaintiff,
                 Case.defendant,
                 Case.judge_name,
@@ -130,7 +126,6 @@ class CaseExcelExportService:
         if filters.get("search"):
             search_condition = self._build_search_condition(filters["search"])
             stmt = stmt.outerjoin(Client, Case.client_id == Client.id).where(search_condition)
-
         return stmt
 
     def _build_search_condition(self, search_term: str) -> ColumnElement[bool]:
@@ -155,7 +150,6 @@ class CaseExcelExportService:
     async def _write_data_batched(self, ws: Worksheet, base_stmt: Select[Any], total_count: int) -> None:
         """Write data to worksheet in optimized batches."""
         row_num = 2
-
         for offset in range(0, max(total_count, 1), BATCH_SIZE):
             stmt = base_stmt.offset(offset).limit(BATCH_SIZE)
             result = await self.db.execute(stmt)
@@ -187,13 +181,18 @@ class CaseExcelExportService:
                 ws.cell(row=row_num, column=17, value=float(case_row.bank_transfer_amount) if case_row.bank_transfer_amount else 0)
                 ws.cell(row=row_num, column=18, value=float(case_row.cash_amount) if case_row.cash_amount else 0)
                 ws.cell(row=row_num, column=19, value=float(case_row.remaining_debt) if case_row.remaining_debt else 0)
-                ws.cell(row=row_num, column=20, value=case_row.plaintiff or "")
-                ws.cell(row=row_num, column=21, value=case_row.defendant or "")
-                ws.cell(row=row_num, column=22, value=case_row.judge_name or "")
-                ws.cell(row=row_num, column=23, value=case_row.remarks or "")
-                ws.cell(row=row_num, column=24, value=experts_str)
-                ws.cell(row=row_num, column=25, value=self._format_datetime(case_row.created_at))
-                ws.cell(row=row_num, column=26, value=self._format_datetime(case_row.updated_at))
+
+                # Новое поле Debit (Колонка 20)
+                ws.cell(row=row_num, column=20, value=float(case_row.debit) if case_row.debit else 0)
+
+                # Сдвиг остальных колонок на +1
+                ws.cell(row=row_num, column=21, value=case_row.plaintiff or "")
+                ws.cell(row=row_num, column=22, value=case_row.defendant or "")
+                ws.cell(row=row_num, column=23, value=case_row.judge_name or "")
+                ws.cell(row=row_num, column=24, value=case_row.remarks or "")
+                ws.cell(row=row_num, column=25, value=experts_str)
+                ws.cell(row=row_num, column=26, value=self._format_datetime(case_row.created_at))
+                ws.cell(row=row_num, column=27, value=self._format_datetime(case_row.updated_at))
 
                 row_num += 1
 
@@ -207,7 +206,6 @@ class CaseExcelExportService:
         )
         result = await self.db.execute(stmt)
         experts = result.all()
-
         return [f"{e.full_name} ({e.email})" if e.full_name else e.email for e in experts]
 
     def _format_status(self, status: CaseStatus) -> str:
@@ -253,6 +251,7 @@ class CaseExcelExportService:
             "Безналичный перевод",
             "Наличные",
             "Остаток долга",
+            "Дебит (в пути)",
             "Истец",
             "Ответчик",
             "Судья",
@@ -278,6 +277,5 @@ class CaseExcelExportService:
                     max_length = max(max_length, len(str(cell.value)))
             adjusted_width = min(max_length + 2, 50)
             ws.column_dimensions[column].width = adjusted_width
-
         ws.freeze_panes = "A2"
         ws.auto_filter.ref = ws.dimensions
