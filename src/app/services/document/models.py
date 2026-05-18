@@ -53,12 +53,16 @@ class Folder(TenantBase):
         foreign_keys="Case.root_folder_id",
         overlaps="root_folder",
     )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", index=True)
     shares: Mapped[list[DocumentShare]] = relationship("DocumentShare", back_populates="folder", cascade="all, delete-orphan")
     __table_args__ = (
         Index("ix_folders_company_id_case_id", "company_id", "case_id"),
         Index("ix_folders_company_id_parent_id", "company_id", "parent_id"),
         Index("ix_folders_company_id_created_at", "company_id", "created_at"),
         Index("ix_folders_company_id_name", "company_id", "name"),
+        # Index("ix_documents_is_deleted", "is_deleted"),  ← УДАЛИТЬ
+        Index("ix_folders_is_deleted", "is_deleted"),
     )
 
 
@@ -84,7 +88,8 @@ class Document(TenantBase):
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", index=True)
     uploaded_by: Mapped[User | None] = relationship("User", back_populates="uploaded_documents")
     folder: Mapped[Folder | None] = relationship("Folder", back_populates="documents")
     case: Mapped[Case | None] = relationship("Case", back_populates="documents")

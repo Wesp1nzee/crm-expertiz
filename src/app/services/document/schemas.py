@@ -112,3 +112,15 @@ class DocumentsBulkDeleteRequest(BaseModel):
 class BulkDownloadRequest(BaseModel):
     folder_ids: list[uuid.UUID] | None = Field(default=None, max_length=50, description="Список ID папок для удаления")
     document_ids: list[uuid.UUID] | None = Field(default=None, max_length=100, description="Список ID документов для удаления")
+
+
+class TrashOperationResponse(BaseModel):
+    message: str
+    moved: dict[str, int]
+    model_config = ConfigDict(from_attributes=True)
+
+
+class RestoreOperationResponse(BaseModel):
+    message: str
+    restored: dict[str, int]
+    model_config = ConfigDict(from_attributes=True)

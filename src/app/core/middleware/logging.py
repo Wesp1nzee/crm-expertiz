@@ -53,7 +53,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             "method": request.method,
             "path": request.url.path,
             "query_params": dict(request.query_params),
-            "client_host": request.client.host if request.client else "unknown",
+            "client_host": self._get_client_ip(request),
             "user_agent": headers_log.get("user-agent", "unknown"),
             "headers": headers_log if self.log_request_body else None,
         }
@@ -110,3 +110,9 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         """Вспомогательный метод для восстановления body_iterator"""
         for item in items:
             yield item
+
+    def _get_client_ip(self, request: Request) -> str:
+        forwarded_for = request.headers.get("x-forwarded-for")
+        if forwarded_for:
+            return forwarded_for.split(",")[0].strip()
+        return request.client.host if request.client else "unknown"

@@ -27,6 +27,8 @@ from src.app.services.document.schemas import (
     FolderCreate,
     FolderResponse,
     FolderUpdate,
+    RestoreOperationResponse,
+    TrashOperationResponse,
 )
 from src.app.services.document.service import DocumentService
 
@@ -341,6 +343,52 @@ async def get_document_url(
     return DocumentDownloadUrl(download_url=url)
 
 
+@router.post("/trash", status_code=status.HTTP_200_OK, summary="Переместить в корзину", response_model=TrashOperationResponse)
+async def move_to_trash(
+    request: DocumentsBulkDeleteRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+) -> TrashOperationResponse:
+    service = DocumentService(db)
+    result = await service.move_to_trash(
+        folder_ids=request.folder_ids,
+        document_ids=request.document_ids,
+        user_id=current_user.id,
+        company_id=current_user.company_id,
+    )
+    return TrashOperationResponse(message="Элементы перемещены в корзину", moved=result)
+
+
+@router.post("/restore", status_code=status.HTTP_200_OK, summary="Восстановить из корзины", response_model=RestoreOperationResponse)
+async def restore_from_trash(
+    request: DocumentsBulkDeleteRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+) -> RestoreOperationResponse:
+    service = DocumentService(db)
+    result = await service.restore_from_trash(
+        folder_ids=request.folder_ids,
+        document_ids=request.document_ids,
+        user_id=current_user.id,
+        company_id=current_user.company_id,
+    )
+    return RestoreOperationResponse(message="Элементы восстановлены", restored=result)
+
+
+@router.delete("/trash", status_code=status.HTTP_204_NO_CONTENT, summary="Безвозвратное удаление документов и папок из корзины")
+async def permanently_delete_from_trash(
+    request: DocumentsBulkDeleteRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+) -> None:
+    service = DocumentService(db)
+    await service.permanently_delete(
+        folder_ids=request.folder_ids,
+        document_ids=request.document_ids,
+        company_id=current_user.company_id,
+    )
+
+
 @router.delete(
     "/{document_id}",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -359,3 +407,26 @@ async def delete_document(
     )
     if not success:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Документ не найден")
+
+
+@router.get(
+    "/trash",
+    response_model=PaginatedResponse[FileSystemEntry],
+    status_code=status.HTTP_200_OK,
+    summary="Просмотр корзины",
+    description="Показывает удалённые документы и папки. Можно восстановить или удалить безвозвратно.",
+)
+async def list_trash(
+    page: int = Query(1, ge=1),
+    limit: int = Query(25, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+) -> PaginatedResponse[FileSystemEntry]:
+    service = DocumentService(db)
+    return await service.get_trash_items(
+        company_id=current_user.company_id,
+        user_id=current_user.id,
+        user_role=current_user.role,
+        page=page,
+        limit=limit,
+    )

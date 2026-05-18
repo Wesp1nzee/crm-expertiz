@@ -6,13 +6,12 @@ import uuid
 import zipfile
 from collections import defaultdict
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from fastapi import HTTPException, UploadFile, status
 from sqlalchemy import (
     CTE,
     Text,
-    cast,
     delete,
     func,
     literal_column,
@@ -22,6 +21,10 @@ from sqlalchemy import (
     union_all,
     update,
 )
+from sqlalchemy import (
+    cast as sql_cast,
+)
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.sql import Select
@@ -54,6 +57,7 @@ class DocumentService:
                 select(Folder.id).where(
                     Folder.id == folder_data.parent_id,
                     Folder.company_id == company_id,
+                    ~Folder.is_deleted,
                 )
             )
             if not parent_check.scalar_one_or_none():
@@ -73,6 +77,7 @@ class DocumentService:
                     select(Folder.case_id).where(
                         Folder.id == folder_data.parent_id,
                         Folder.company_id == company_id,
+                        ~Folder.is_deleted,
                     )
                 )
                 parent_case_id = parent_check.scalar_one_or_none()
@@ -103,7 +108,7 @@ class DocumentService:
 
         res = await self.db.execute(
             select(Folder)
-            .where(Folder.id == folder_id, Folder.company_id == company_id)
+            .where(Folder.id == folder_id, Folder.company_id == company_id, ~Folder.is_deleted)
             .options(selectinload(Folder.parent), selectinload(Folder.subfolders))
         )
         folder = res.scalar_one_or_none()
@@ -132,7 +137,13 @@ class DocumentService:
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail="Нельзя переместить папку в дочернюю папку",
                     )
-                parent_res = await self.db.execute(select(Folder).where(Folder.id == new_parent_id, Folder.company_id == company_id))
+                parent_res = await self.db.execute(
+                    select(Folder).where(
+                        Folder.id == new_parent_id,
+                        Folder.company_id == company_id,
+                        ~Folder.is_deleted,
+                    )
+                )
                 target_parent = parent_res.scalar_one_or_none()
                 if not target_parent:
                     raise HTTPException(
@@ -164,7 +175,7 @@ class DocumentService:
         return folder
 
     async def delete_folder(self, folder_id: uuid.UUID, company_id: uuid.UUID) -> None:
-        res = await self.db.execute(select(Folder).where(Folder.id == folder_id, Folder.company_id == company_id))
+        res = await self.db.execute(select(Folder).where(Folder.id == folder_id, Folder.company_id == company_id, ~Folder.is_deleted))
         folder = res.scalar_one_or_none()
         if not folder:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Папка не найдена")
@@ -194,7 +205,9 @@ class DocumentService:
             if not case:
                 raise HTTPException(status_code=404, detail="Дело не найдено")
             if folder_id:
-                f_check = await self.db.execute(select(Folder.case_id).where(Folder.id == folder_id, Folder.company_id == company_id))
+                f_check = await self.db.execute(
+                    select(Folder.case_id).where(Folder.id == folder_id, Folder.company_id == company_id, ~Folder.is_deleted)
+                )
                 if f_check.scalar_one_or_none() != case_id:
                     effective_folder_id = case.root_folder_id
             else:
@@ -239,7 +252,13 @@ class DocumentService:
         company_id: uuid.UUID,
         download: bool = False,
     ) -> str | None:
-        res = await self.db.execute(select(Document).where(Document.id == doc_id, Document.company_id == company_id))
+        res = await self.db.execute(
+            select(Document).where(
+                Document.id == doc_id,
+                Document.company_id == company_id,
+                ~Document.is_deleted,
+            )
+        )
         doc = res.scalar_one_or_none()
         if not doc:
             return None
@@ -250,7 +269,13 @@ class DocumentService:
         )
 
     async def delete_document(self, doc_id: uuid.UUID, company_id: uuid.UUID) -> bool:
-        res = await self.db.execute(select(Document).where(Document.id == doc_id, Document.company_id == company_id))
+        res = await self.db.execute(
+            select(Document).where(
+                Document.id == doc_id,
+                Document.company_id == company_id,
+                ~Document.is_deleted,
+            )
+        )
         doc = res.scalar_one_or_none()
         if not doc:
             return False
@@ -270,7 +295,11 @@ class DocumentService:
     ) -> Document | None:
         res = await self.db.execute(
             select(Document)
-            .where(Document.id == document_id, Document.company_id == company_id)
+            .where(
+                Document.id == document_id,
+                Document.company_id == company_id,
+                ~Document.is_deleted,
+            )
             .options(selectinload(Document.folder), selectinload(Document.case))
         )
         doc = res.scalar_one_or_none()
@@ -289,7 +318,13 @@ class DocumentService:
         if "folder_id" in update_data:
             new_folder_id = update_data["folder_id"]
             if new_folder_id is not None:
-                folder_res = await self.db.execute(select(Folder).where(Folder.id == new_folder_id, Folder.company_id == company_id))
+                folder_res = await self.db.execute(
+                    select(Folder).where(
+                        Folder.id == new_folder_id,
+                        Folder.company_id == company_id,
+                        ~Folder.is_deleted,
+                    )
+                )
                 target_folder = folder_res.scalar_one_or_none()
                 if not target_folder:
                     raise HTTPException(
@@ -336,7 +371,13 @@ class DocumentService:
         valid_root_ids: list[uuid.UUID] = []
 
         if folder_ids:
-            roots_result = await self.db.execute(select(Folder.id).where(Folder.id.in_(folder_ids), Folder.company_id == company_id))
+            roots_result = await self.db.execute(
+                select(Folder.id).where(
+                    Folder.id.in_(folder_ids),
+                    Folder.company_id == company_id,
+                    ~Folder.is_deleted,
+                )
+            )
             valid_root_ids = [row[0] for row in roots_result.all()]
             if len(valid_root_ids) != len(set(folder_ids)):
                 raise HTTPException(
@@ -357,10 +398,12 @@ class DocumentService:
 
             base_cte = (
                 select(Folder.id)
-                .where(Folder.id.in_(valid_root_ids), Folder.company_id == company_id)
+                .where(Folder.id.in_(valid_root_ids), Folder.company_id == company_id, ~Folder.is_deleted)
                 .cte(name="folders_to_delete", recursive=True)
             )
-            recursive_part = select(Folder.id).join(base_cte, Folder.parent_id == base_cte.c.id).where(Folder.company_id == company_id)
+            recursive_part = (
+                select(Folder.id).join(base_cte, Folder.parent_id == base_cte.c.id).where(Folder.company_id == company_id, ~Folder.is_deleted)
+            )
             all_folders_cte = base_cte.union_all(recursive_part)
             await self.db.execute(
                 delete(Folder).where(
@@ -374,6 +417,7 @@ class DocumentService:
                 select(Document.id, Document.file_path).where(
                     Document.id.in_(document_ids),
                     Document.company_id == company_id,
+                    ~Document.is_deleted,
                 )
             )
             loose_docs = loose_docs_result.all()
@@ -398,6 +442,336 @@ class DocumentService:
         await self.db.commit()
         await self._delete_s3_files_safe(all_file_paths)
 
+    async def move_to_trash(
+        self,
+        folder_ids: list[uuid.UUID] | None,
+        document_ids: list[uuid.UUID] | None,
+        user_id: uuid.UUID,
+        company_id: uuid.UUID,
+    ) -> dict[str, int]:
+        """Перемещает элементы в корзину."""
+        moved: dict[str, int] = {"folders": 0, "documents": 0}
+        now = datetime.now(UTC)
+
+        if document_ids:
+            result = await self.db.execute(
+                update(Document)
+                .where(
+                    Document.id.in_(document_ids),
+                    Document.company_id == company_id,
+                    ~Document.is_deleted,
+                )
+                .values(is_deleted=True, deleted_at=now)
+                .returning(Document.id)
+            )
+            moved["documents"] = len(result.all())
+
+        if folder_ids:
+            base_cte = (
+                select(Folder.id)
+                .where(
+                    Folder.id.in_(folder_ids),
+                    Folder.company_id == company_id,
+                    ~Folder.is_deleted,
+                )
+                .cte("trash_tree", recursive=True)
+            )
+            recursive = (
+                select(Folder.id).join(base_cte, Folder.parent_id == base_cte.c.id).where(Folder.company_id == company_id, ~Folder.is_deleted)
+            )
+            all_folders = base_cte.union_all(recursive)
+
+            folder_upd = await self.db.execute(
+                update(Folder)
+                .where(
+                    Folder.id.in_(select(all_folders.c.id)),
+                    Folder.company_id == company_id,
+                )
+                .values(is_deleted=True, deleted_at=now)
+            )
+            moved["folders"] = cast(CursorResult[Any], folder_upd).rowcount or 0
+
+            await self.db.execute(
+                update(Document)
+                .where(
+                    Document.folder_id.in_(select(all_folders.c.id)),
+                    Document.company_id == company_id,
+                )
+                .values(is_deleted=True, deleted_at=now)
+            )
+
+        await self.db.commit()
+        return moved
+
+    async def restore_from_trash(
+        self,
+        folder_ids: list[uuid.UUID] | None,
+        document_ids: list[uuid.UUID] | None,
+        user_id: uuid.UUID,
+        company_id: uuid.UUID,
+    ) -> dict[str, int]:
+        """Восстанавливает элементы из корзины."""
+        restored: dict[str, int] = {"folders": 0, "documents": 0}
+
+        if document_ids:
+            result = await self.db.execute(
+                update(Document)
+                .where(
+                    Document.id.in_(document_ids),
+                    Document.company_id == company_id,
+                    Document.is_deleted,
+                )
+                .values(is_deleted=False, deleted_at=None)
+                .returning(Document.id)
+            )
+            restored["documents"] = len(result.all())
+
+        if folder_ids:
+            base_cte = (
+                select(Folder.id)
+                .where(
+                    Folder.id.in_(folder_ids),
+                    Folder.company_id == company_id,
+                    Folder.is_deleted,
+                )
+                .cte("restore_tree", recursive=True)
+            )
+            recursive = (
+                select(Folder.id).join(base_cte, Folder.parent_id == base_cte.c.id).where(Folder.company_id == company_id, Folder.is_deleted)
+            )
+            all_folders = base_cte.union_all(recursive)
+
+            folder_upd = await self.db.execute(
+                update(Folder)
+                .where(
+                    Folder.id.in_(select(all_folders.c.id)),
+                    Folder.company_id == company_id,
+                )
+                .values(is_deleted=False, deleted_at=None)
+            )
+            restored["folders"] = cast(CursorResult[Any], folder_upd).rowcount or 0
+
+            await self.db.execute(
+                update(Document)
+                .where(
+                    Document.folder_id.in_(select(all_folders.c.id)),
+                    Document.company_id == company_id,
+                )
+                .values(is_deleted=False, deleted_at=None)
+            )
+
+        await self.db.commit()
+        return restored
+
+    async def permanently_delete(
+        self,
+        folder_ids: list[uuid.UUID] | None,
+        document_ids: list[uuid.UUID] | None,
+        company_id: uuid.UUID,
+    ) -> None:
+        """Полностью удаляет элементы из корзины с очисткой S3."""
+        file_paths: list[str] = []
+
+        if document_ids:
+            docs = await self.db.execute(
+                select(Document.file_path).where(
+                    Document.id.in_(document_ids),
+                    Document.company_id == company_id,
+                    Document.is_deleted,
+                )
+            )
+            file_paths.extend([row[0] for row in docs.all()])
+            await self.db.execute(
+                delete(Document).where(
+                    Document.id.in_(document_ids),
+                    Document.company_id == company_id,
+                )
+            )
+
+        if folder_ids:
+            base_cte = (
+                select(Folder.id)
+                .where(
+                    Folder.id.in_(folder_ids),
+                    Folder.company_id == company_id,
+                    Folder.is_deleted,
+                )
+                .cte("perm_delete_tree", recursive=True)
+            )
+            recursive = (
+                select(Folder.id).join(base_cte, Folder.parent_id == base_cte.c.id).where(Folder.company_id == company_id, Folder.is_deleted)
+            )
+            all_folders = base_cte.union_all(recursive)
+
+            files = await self.db.execute(
+                select(Document.file_path).where(
+                    Document.folder_id.in_(select(all_folders.c.id)),
+                    Document.company_id == company_id,
+                )
+            )
+            file_paths.extend([row[0] for row in files.all()])
+
+            await self.db.execute(
+                delete(Document).where(
+                    Document.folder_id.in_(select(all_folders.c.id)),
+                    Document.company_id == company_id,
+                )
+            )
+            await self.db.execute(
+                delete(Folder).where(
+                    Folder.id.in_(select(all_folders.c.id)),
+                    Folder.company_id == company_id,
+                )
+            )
+
+        await self.db.commit()
+        await self._delete_s3_files_safe(file_paths)
+
+    async def get_trash_items(
+        self,
+        company_id: uuid.UUID,
+        user_id: uuid.UUID,
+        user_role: UserRole,
+        page: int = 1,
+        limit: int = 50,
+    ) -> PaginatedResponse[FileSystemEntry]:
+        """Получает список элементов в корзине с пагинацией."""
+        sort_map = {"name": "name", "created_at": "created_at", "size": "size"}
+        target_sort = sort_map.get("created_at", "created_at")
+        direction = "DESC"
+        offset = (page - 1) * limit
+
+        f_base: Select[Any] = (
+            select(
+                Folder.id,
+                Folder.name.label("name"),
+                literal_column("'folder'").label("type"),
+                Folder.created_at,
+                Folder.parent_id,
+                literal_column("0").label("size"),
+                literal_column("NULL").label("extension"),
+                Folder.created_by_id,
+                User.full_name.label("created_by_name"),
+                Case.id.label("case_id"),
+                Case.number.label("case_number"),
+                Folder.created_by_id.label("owner_id"),
+            )
+            .join(User, Folder.created_by_id == User.id)
+            .outerjoin(Case, Case.root_folder_id == Folder.id)
+            .where(Folder.company_id == company_id, Folder.is_deleted)
+        )
+
+        d_base: Select[Any] = (
+            select(
+                Document.id,
+                Document.title.label("name"),
+                literal_column("'file'").label("type"),
+                Document.created_at,
+                Document.folder_id.label("parent_id"),
+                Document.file_size.label("size"),
+                Document.file_extension.label("extension"),
+                Document.uploaded_by_id.label("created_by_id"),
+                User.full_name.label("created_by_name"),
+                literal_column("NULL").label("case_id"),
+                literal_column("NULL").label("case_number"),
+                Document.uploaded_by_id.label("owner_id"),
+            )
+            .join(User, Document.uploaded_by_id == User.id)
+            .where(Document.company_id == company_id, Document.is_deleted)
+        )
+
+        if user_role == UserRole.EXPERT and user_id is not None:
+            expert_case_sq = select(case_experts.c.case_id).where(case_experts.c.user_id == user_id).scalar_subquery()
+
+            f_own = f_base.where(or_(Folder.created_by_id == user_id, Folder.case_id.in_(expert_case_sq)))
+            d_own = d_base.where(or_(Document.uploaded_by_id == user_id, Document.case_id.in_(expert_case_sq)))
+
+            shared_batch_sq = (
+                select(ShareBatch.id)
+                .where(
+                    ShareBatch.shared_with_user_id == user_id,
+                    ShareBatch.share_type == ShareType.USER,
+                    ShareBatch.is_active.is_(True),
+                )
+                .scalar_subquery()
+            )
+            shared_folder_ids_sq = (
+                select(DocumentShare.folder_id)
+                .where(
+                    DocumentShare.batch_id.in_(shared_batch_sq),
+                    DocumentShare.folder_id.isnot(None),
+                )
+                .scalar_subquery()
+            )
+            shared_doc_ids_sq = (
+                select(DocumentShare.document_id)
+                .where(
+                    DocumentShare.batch_id.in_(shared_batch_sq),
+                    DocumentShare.document_id.isnot(None),
+                )
+                .scalar_subquery()
+            )
+
+            f_shared = f_base.where(Folder.id.in_(shared_folder_ids_sq))
+            d_shared = d_base.where(Document.id.in_(shared_doc_ids_sq))
+
+            combined = union_all(f_own, d_own, f_shared, d_shared).alias("entries")
+
+        else:
+            if user_id is not None:
+                f_stmt = f_base.where(Folder.created_by_id == user_id)
+                d_stmt = d_base.where(Document.uploaded_by_id == user_id)
+            else:
+                f_stmt = f_base
+                d_stmt = d_base
+            combined = union_all(f_stmt, d_stmt).alias("entries")
+
+        total: int = (await self.db.execute(select(func.count()).select_from(combined))).scalar_one() or 0
+
+        rows = (await self.db.execute(select(combined).order_by(text(f"{target_sort} {direction}")).limit(limit).offset(offset))).all()
+
+        my_doc_ids = [r.id for r in rows if r.type == "file" and r.owner_id == user_id]
+        my_folder_ids = [r.id for r in rows if r.type == "folder" and r.owner_id == user_id]
+
+        share_info_map = await self._load_share_info_map(
+            owner_id=user_id,
+            company_id=company_id,
+            document_ids=my_doc_ids,
+            folder_ids=my_folder_ids,
+        )
+
+        items = [
+            FileSystemEntry(
+                id=row.id,
+                name=row.name,
+                type=row.type,
+                created_at=row.created_at,
+                created_by_id=row.created_by_id,
+                created_by_name=row.created_by_name,
+                parent_id=row.parent_id,
+                size=row.size if row.type == "file" else None,
+                extension=row.extension,
+                case_id=row.case_id,
+                case_number=row.case_number,
+                share_info=share_info_map.get(("document" if row.type == "file" else "folder", row.id)) if row.owner_id == user_id else None,
+            )
+            for row in rows
+        ]
+
+        total_pages = math.ceil(total / limit) if total > 0 else 1
+
+        return PaginatedResponse(
+            items=items,
+            meta=PaginationMeta(
+                total_items=total,
+                total_pages=total_pages,
+                current_page=page,
+                per_page=limit,
+                has_next=page < total_pages,
+                has_prev=page > 1,
+            ),
+        )
+
     async def get_unified_list(
         self,
         company_id: uuid.UUID,
@@ -412,6 +786,7 @@ class DocumentService:
         user_role: UserRole | None = None,
         scope: str = "my",
     ) -> PaginatedResponse[FileSystemEntry]:
+        """Получает объединённый список файлов и папок с пагинацией."""
         sort_map = {"name": "name", "created_at": "created_at", "size": "size"}
         target_sort = sort_map.get(sort_by, "created_at")
         direction = "DESC" if order.lower() == "desc" else "ASC"
@@ -434,7 +809,7 @@ class DocumentService:
             )
             .join(User, Folder.created_by_id == User.id)
             .outerjoin(Case, Case.root_folder_id == Folder.id)
-            .where(Folder.company_id == company_id)
+            .where(Folder.company_id == company_id, ~Folder.is_deleted)
         )
 
         d_base: Select[Any] = (
@@ -453,7 +828,7 @@ class DocumentService:
                 Document.uploaded_by_id.label("owner_id"),
             )
             .join(User, Document.uploaded_by_id == User.id)
-            .where(Document.company_id == company_id)
+            .where(Document.company_id == company_id, ~Document.is_deleted)
         )
 
         def apply_filters(f_stmt: Select[Any], d_stmt: Select[Any]) -> tuple[Select[Any], Select[Any]]:
@@ -469,12 +844,9 @@ class DocumentService:
             return f_stmt, d_stmt
 
         if user_role == UserRole.EXPERT and user_id is not None:
-            # Эксперты всегда видят только свои файлы + файлы, которыми поделились
             expert_case_sq = select(case_experts.c.case_id).where(case_experts.c.user_id == user_id).scalar_subquery()
 
-            # Папки: созданные экспертом ИЛИ принадлежащие его делам
             f_own = f_base.where(or_(Folder.created_by_id == user_id, Folder.case_id.in_(expert_case_sq)))
-            # Документы: загруженные экспертом ИЛИ принадлежащие его делам
             d_own = d_base.where(or_(Document.uploaded_by_id == user_id, Document.case_id.in_(expert_case_sq)))
             f_own, d_own = apply_filters(f_own, d_own)
 
@@ -489,12 +861,18 @@ class DocumentService:
             )
             shared_folder_ids_sq = (
                 select(DocumentShare.folder_id)
-                .where(DocumentShare.batch_id.in_(shared_batch_sq), DocumentShare.folder_id.isnot(None))
+                .where(
+                    DocumentShare.batch_id.in_(shared_batch_sq),
+                    DocumentShare.folder_id.isnot(None),
+                )
                 .scalar_subquery()
             )
             shared_doc_ids_sq = (
                 select(DocumentShare.document_id)
-                .where(DocumentShare.batch_id.in_(shared_batch_sq), DocumentShare.document_id.isnot(None))
+                .where(
+                    DocumentShare.batch_id.in_(shared_batch_sq),
+                    DocumentShare.document_id.isnot(None),
+                )
                 .scalar_subquery()
             )
 
@@ -505,18 +883,15 @@ class DocumentService:
             combined = union_all(f_own, d_own, f_shared, d_shared).alias("entries")
 
         else:
-            # Для CEO, ACCOUNTANT и ADMIN: обработка scope параметра
-            # scope='my' - только свои файлы, scope='all' - все файлы компании (по умолчанию 'my')
             f_stmt, d_stmt = apply_filters(f_base, d_base)
 
             if scope == "my" and user_id is not None:
-                # Фильтруем только файлы и папки текущего пользователя
                 f_stmt = f_stmt.where(Folder.created_by_id == user_id)
                 d_stmt = d_stmt.where(Document.uploaded_by_id == user_id)
 
             combined = union_all(f_stmt, d_stmt).alias("entries")
 
-        total: int = (await self.db.execute(select(func.count()).select_from(combined))).scalar_one()
+        total: int = (await self.db.execute(select(func.count()).select_from(combined))).scalar_one() or 0
 
         rows = (await self.db.execute(select(combined).order_by(text(f"{target_sort} {direction}")).limit(limit).offset(offset))).all()
 
@@ -571,8 +946,9 @@ class DocumentService:
         user_role: UserRole,
         company_id: uuid.UUID,
     ) -> None:
-        cte_base_query = select(Folder.id, Folder.name, Folder.parent_id, cast(Folder.name, Text).label("full_path")).where(
-            Folder.id == folder_id, Folder.company_id == company_id
+        """Добавляет содержимое папки в ZIP-архив."""
+        cte_base_query = select(Folder.id, Folder.name, Folder.parent_id, sql_cast(Folder.name, Text).label("full_path")).where(
+            Folder.id == folder_id, Folder.company_id == company_id, ~Folder.is_deleted
         )
 
         if user_role == UserRole.EXPERT:
@@ -591,7 +967,10 @@ class DocumentService:
         docs_stmt = (
             select(Document, folder_tree_subquery.c.full_path)
             .join(folder_tree_subquery, Document.folder_id == folder_tree_subquery.c.id)
-            .where(Document.company_id == company_id)
+            .where(
+                Document.company_id == company_id,
+                ~Document.is_deleted,
+            )
         )
         if user_role == UserRole.EXPERT:
             docs_stmt = docs_stmt.where(Document.uploaded_by_id == user_id)
@@ -625,13 +1004,16 @@ class DocumentService:
         user_role: UserRole,
         company_id: uuid.UUID,
     ) -> None:
+        """Добавляет выбранные элементы в ZIP-архив."""
         semaphore = asyncio.Semaphore(5)
         zip_lock = asyncio.Lock()
         tasks = []
 
         if folder_ids:
-            folder_base = select(Folder.id, Folder.name, Folder.parent_id, cast(Folder.name, Text).label("full_path")).where(
-                Folder.id.in_(folder_ids), Folder.company_id == company_id
+            folder_base = select(Folder.id, Folder.name, Folder.parent_id, sql_cast(Folder.name, Text).label("full_path")).where(
+                Folder.id.in_(folder_ids),
+                Folder.company_id == company_id,
+                ~Folder.is_deleted,
             )
             if user_role == UserRole.EXPERT:
                 folder_base = folder_base.where(Folder.created_by_id == user_id)
@@ -646,13 +1028,21 @@ class DocumentService:
                 folder_rec = folder_rec.where(Folder.created_by_id == user_id)
             folder_union = folder_cte.union_all(folder_rec)
             folder_subquery = folder_union.alias("folder_tree")
-            folder_docs_stmt = select(Document, folder_subquery.c.full_path).join(folder_subquery, Document.folder_id == folder_subquery.c.id)
+            folder_docs_stmt = (
+                select(Document, folder_subquery.c.full_path)
+                .join(folder_subquery, Document.folder_id == folder_subquery.c.id)
+                .where(~Document.is_deleted)
+            )
             res = await self.db.execute(folder_docs_stmt)
             for row in res.all():
                 tasks.append(self._process_zip_entry(row[0], row[1], zip_file, semaphore, zip_lock))
 
         if document_ids:
-            doc_stmt = select(Document).where(Document.id.in_(document_ids), Document.company_id == company_id)
+            doc_stmt = select(Document).where(
+                Document.id.in_(document_ids),
+                Document.company_id == company_id,
+                ~Document.is_deleted,
+            )
             if user_role == UserRole.EXPERT:
                 doc_stmt = doc_stmt.where(Document.uploaded_by_id == user_id)
             res_docs = await self.db.execute(doc_stmt)
@@ -670,6 +1060,7 @@ class DocumentService:
         semaphore: asyncio.Semaphore,
         zip_lock: asyncio.Lock,
     ) -> None:
+        """Обрабатывает отдельный документ для добавления в ZIP."""
         async with semaphore:
             try:
                 async with s3_storage.get_file_stream(doc.file_path) as stream:
@@ -687,6 +1078,7 @@ class DocumentService:
         document_ids: list[uuid.UUID],
         folder_ids: list[uuid.UUID],
     ) -> dict[tuple[str, uuid.UUID], ShareInfoBrief]:
+        """Загружает информацию о расшаривании для элементов."""
         if not owner_id or (not document_ids and not folder_ids):
             return {}
 
@@ -710,7 +1102,10 @@ class DocumentService:
                     func.count(DocumentShare.id).label("cnt"),
                 )
                 .join(active_batch_sq, DocumentShare.batch_id == active_batch_sq.c.id)
-                .where(DocumentShare.document_id.in_(document_ids))
+                .where(
+                    DocumentShare.document_id.in_(document_ids),
+                    DocumentShare.document_id.isnot(None),
+                )
                 .group_by(DocumentShare.document_id, active_batch_sq.c.share_type)
             )
             for resource_id, share_type, cnt in doc_agg.all():
@@ -728,7 +1123,10 @@ class DocumentService:
                     func.count(DocumentShare.id).label("cnt"),
                 )
                 .join(active_batch_sq, DocumentShare.batch_id == active_batch_sq.c.id)
-                .where(DocumentShare.folder_id.in_(folder_ids))
+                .where(
+                    DocumentShare.folder_id.in_(folder_ids),
+                    DocumentShare.folder_id.isnot(None),
+                )
                 .group_by(DocumentShare.folder_id, active_batch_sq.c.share_type)
             )
             for resource_id, share_type, cnt in folder_agg.all():
@@ -741,25 +1139,41 @@ class DocumentService:
         return {k: ShareInfoBrief(**v) for k, v in result.items()}
 
     async def _collect_file_paths_in_tree(self, root_ids: list[uuid.UUID], company_id: uuid.UUID) -> list[str]:
+        """Собирает пути файлов в дереве папок."""
         paths, _ = await self._collect_file_paths_and_ids_in_tree(root_ids, company_id)
         return paths
 
     async def _collect_file_paths_and_ids_in_tree(self, root_ids: list[uuid.UUID], company_id: uuid.UUID) -> tuple[list[str], set[uuid.UUID]]:
+        """Собирает пути файлов и их ID в дереве папок."""
         if not root_ids:
             return [], set()
-        base_cte = select(Folder.id).where(Folder.id.in_(root_ids), Folder.company_id == company_id).cte(name="folder_tree", recursive=True)
-        recursive_part = select(Folder.id).join(base_cte, Folder.parent_id == base_cte.c.id).where(Folder.company_id == company_id)
+        base_cte = (
+            select(Folder.id)
+            .where(
+                Folder.id.in_(root_ids),
+                Folder.company_id == company_id,
+                ~Folder.is_deleted,
+            )
+            .cte(name="folder_tree", recursive=True)
+        )
+        recursive_part = (
+            select(Folder.id).join(base_cte, Folder.parent_id == base_cte.c.id).where(Folder.company_id == company_id, ~Folder.is_deleted)
+        )
         folder_tree = base_cte.union_all(recursive_part)
         docs_stmt = (
             select(Document.id, Document.file_path)
             .join(folder_tree, Document.folder_id == folder_tree.c.id)
-            .where(Document.company_id == company_id)
+            .where(
+                Document.company_id == company_id,
+                ~Document.is_deleted,
+            )
         )
         result = await self.db.execute(docs_stmt)
         rows = result.all()
         return [row[1] for row in rows], {row[0] for row in rows}
 
     async def _delete_s3_files_safe(self, file_paths: list[str]) -> None:
+        """Безопасно удаляет файлы из S3 с обработкой ошибок."""
         if not file_paths:
             return
         results = await asyncio.gather(
@@ -776,10 +1190,19 @@ class DocumentService:
         new_case_id: uuid.UUID | None,
         company_id: uuid.UUID,
     ) -> None:
+        """Обновляет case_id для всей подструктуры папок и документов."""
         base_cte = (
-            select(Folder.id).where(Folder.parent_id == root_folder_id, Folder.company_id == company_id).cte(name="subtree", recursive=True)
+            select(Folder.id)
+            .where(
+                Folder.parent_id == root_folder_id,
+                Folder.company_id == company_id,
+                ~Folder.is_deleted,
+            )
+            .cte(name="subtree", recursive=True)
         )
-        recursive_part = select(Folder.id).join(base_cte, Folder.parent_id == base_cte.c.id).where(Folder.company_id == company_id)
+        recursive_part = (
+            select(Folder.id).join(base_cte, Folder.parent_id == base_cte.c.id).where(Folder.company_id == company_id, ~Folder.is_deleted)
+        )
         subtree = base_cte.union_all(recursive_part)
         await self.db.execute(
             update(Folder).where(Folder.id.in_(select(subtree.c.id)), Folder.company_id == company_id).values(case_id=new_case_id)
@@ -809,10 +1232,13 @@ class DocumentService:
         potential_parent_id: uuid.UUID,
         folder_id: uuid.UUID,
     ) -> bool:
+        """Проверяет, является ли папка потомком другой папки."""
         if folder_id == potential_parent_id:
             return False
-        base_case = select(Folder.parent_id.label("ancestor_id")).where(Folder.id == potential_parent_id).cte(recursive=True)
-        recursive_case = select(Folder.parent_id.label("ancestor_id")).join(base_case, Folder.id == base_case.c.ancestor_id)
+        base_case = select(Folder.parent_id.label("ancestor_id")).where(Folder.id == potential_parent_id, ~Folder.is_deleted).cte(recursive=True)
+        recursive_case = (
+            select(Folder.parent_id.label("ancestor_id")).join(base_case, Folder.id == base_case.c.ancestor_id).where(~Folder.is_deleted)
+        )
         all_ancestors = base_case.union_all(recursive_case)
         result = await self.db.execute(select(1).where(all_ancestors.c.ancestor_id == folder_id))
         return result.scalar_one_or_none() is not None
@@ -824,6 +1250,7 @@ class DocumentService:
         user_role: UserRole,
         company_id: uuid.UUID,
     ) -> bool:
+        """Проверяет доступ пользователя к документу."""
         if document.company_id != company_id:
             return False
         if user_role in (UserRole.ADMIN, UserRole.CEO, UserRole.ACCOUNTANT):
@@ -837,6 +1264,7 @@ class DocumentService:
         user_role: UserRole,
         company_id: uuid.UUID,
     ) -> bool:
+        """Проверяет доступ пользователя к папке."""
         if folder.company_id != company_id:
             return False
         if user_role in (UserRole.ADMIN, UserRole.CEO, UserRole.ACCOUNTANT):
