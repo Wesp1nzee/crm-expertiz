@@ -50,6 +50,11 @@ class CaseStatus(str, Enum):
     fssp = "fssp"
 
 
+class LegalEntityType(str, Enum):
+    OOO = "ООО"
+    IP = "ИП"
+
+
 class Case(TenantBase):
     __tablename__ = "cases"
 
@@ -67,6 +72,14 @@ class Case(TenantBase):
         default=CaseStatus.in_work,
         index=True,
     )
+
+    legal_entity_type: Mapped[LegalEntityType] = mapped_column(
+        SQLEnum(LegalEntityType, native_enum=False), nullable=False, default=LegalEntityType.OOO, index=True
+    )
+
+    additional_materials_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+
+    execution_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
     start_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     deadline: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)

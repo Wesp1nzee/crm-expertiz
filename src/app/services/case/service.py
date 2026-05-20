@@ -50,7 +50,6 @@ class CaseService:
         self.db = db_session
 
     def _expert_filter(self, stmt: Select[T], user_id: UUID) -> Select[T]:
-        """Фильтр: показывать только дела где текущий эксперт назначен."""
         return stmt.where(Case.id.in_(select(case_experts.c.case_id).where(case_experts.c.user_id == user_id)))
 
     async def _load_case_or_404(self, case_id: UUID, company_id: UUID) -> Case:
@@ -158,6 +157,9 @@ class CaseService:
         if case_data.deadline < case_data.start_date:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Срок выполнения не может быть раньше даты начала")
 
+        if case_data.execution_date and case_data.execution_date < case_data.start_date:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Дата выполнения не может быть раньше даты начала работ")
+
         existing = await self.db.execute(select(Case).where(Case.number == case_data.number, Case.company_id == company_id))
         if existing.scalar():
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Дело с номером '{case_data.number}' уже существует")
@@ -182,7 +184,7 @@ class CaseService:
         data = case_data.model_dump(exclude={"expert_ids", "expert_painting", "archive_status"})
         data["company_id"] = company_id
 
-        decimal_fields = ["cost", "bank_transfer_amount", "cash_amount", "remaining_debt"]
+        decimal_fields = ["cost", "bank_transfer_amount", "cash_amount", "remaining_debt", "debit"]
         for field in decimal_fields:
             if field in data and data[field] is not None:
                 try:
@@ -214,11 +216,7 @@ class CaseService:
 
         except Exception as db_error:
             await self.db.rollback()
-            import logging
-            import traceback
-
-            logging.exception("CRITICAL: Ошибка при создании дела: %s", traceback.format_exc())
-
+            logger.exception("CRITICAL: Ошибка при создании дела")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Ошибка при сохранении дела и структуры документов"
             ) from db_error
@@ -273,7 +271,6 @@ class CaseService:
         )
 
     def _to_mail_message_detail(self, msg: MailMessage) -> MailMessageDetailResponse:
-        """Convert MailMessage to MailMessageDetailResponse."""
         body_text = msg.content.body_text if msg.content else None
         body_html = msg.content.body_html if msg.content else None
 
@@ -320,19 +317,26 @@ class CaseService:
             return None
 
         update_dict = update_data.model_dump(exclude_unset=True)
-        for field, value in update_dict.items():
-            if hasattr(case, field):
-                setattr(case, field, value)
 
-        if case.deadline < case.start_date:
-            raise ValueError("Deadline cannot be before start date")
+        new_start = update_dict.get("start_date", case.start_date)
+        new_deadline = update_dict.get("deadline", case.deadline)
+        new_execution = update_dict.get("execution_date", case.execution_date)
+
+        if new_deadline and new_start and new_deadline < new_start:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Срок выполнения не может быть раньше даты начала")
+
+        if new_execution and new_start and new_execution < new_start:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Дата выполнения не может быть раньше даты начала работ")
+
+        for field, value in update_dict.items():
+            if hasattr(case, field) and value is not None:
+                setattr(case, field, value)
 
         await self.db.commit()
         await self.db.refresh(case)
         return self._to_case_response(case)
 
     async def assign_experts(self, case_id: UUID, data: AssignExpertsRequest, user_role: UserRole, company_id: UUID) -> CaseResponse:
-        """Полностью заменяет список экспертов на дело."""
         if user_role == UserRole.EXPERT:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Эксперт не может назначать других экспертов")
 
@@ -348,8 +352,6 @@ class CaseService:
         await self.db.commit()
         await self.db.refresh(case)
         return self._to_case_response(case)
-
-    # ── Delete ────────────────────────────────────────────────────────────────
 
     async def soft_delete_case(self, case_id: UUID, user_role: UserRole, company_id: UUID) -> bool:
         if user_role == UserRole.EXPERT:
@@ -500,5 +502,4 @@ class CaseService:
         return [CaseSuggestionResponse(id=r.id, number=r.number, case_number=r.case_number) for r in rows]
 
     def _to_case_response(self, case: Case) -> CaseResponse:
-        """Конвертирует модель Case в CaseResponse с заполненным полем experts."""
         return CaseResponse.model_validate(case).model_copy(update={"experts": [UserResponse.model_validate(u) for u in (case.experts or [])]})

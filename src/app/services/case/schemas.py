@@ -52,6 +52,11 @@ class ContactType(str, Enum):
     individual = "individual"
 
 
+class LegalEntityType(str, Enum):
+    OOO = "ООО"
+    IP = "ИП"
+
+
 # ── Nested Schemas ────────────────────────────────────────────────────────────
 
 
@@ -175,9 +180,12 @@ class CaseBase(BaseModel):
     object_type: str
     object_address: str
     status: CaseStatus = CaseStatus.in_work
+    legal_entity_type: LegalEntityType = LegalEntityType.OOO
     start_date: datetime
     deadline: datetime
     completion_date: datetime | None = None
+    additional_materials_date: datetime | None = None
+    execution_date: datetime | None = None
     cost: Decimal
     bank_transfer_amount: Decimal = Decimal("0.00")
     cash_amount: Decimal = Decimal("0.00")
@@ -192,7 +200,6 @@ class CaseBase(BaseModel):
 
 
 class CaseCreateRequest(CaseBase):
-    # Список экспертов при создании (опционально)
     expert_ids: list[uuid.UUID] = Field(default_factory=list)
 
 
@@ -205,6 +212,7 @@ class CaseUpdateRequest(BaseModel):
     object_type: str | None = None
     object_address: str | None = None
     status: CaseStatus | None = None
+    legal_entity_type: LegalEntityType | None = None
     start_date: datetime | None = None
     deadline: datetime | None = None
     cost: Decimal | None = None
@@ -214,11 +222,13 @@ class CaseUpdateRequest(BaseModel):
     cash_amount: Decimal | None = None
     remaining_debt: Decimal | None = None
     completion_date: datetime | None = None
+    additional_materials_date: datetime | None = None
+    execution_date: datetime | None = None
     debit: Decimal | None = None
     remarks: str | None = None
     judge_name: str | None = None
 
-    @field_validator("start_date", "deadline", "completion_date", mode="after")
+    @field_validator("start_date", "deadline", "completion_date", "additional_materials_date", "execution_date", mode="after")
     @classmethod
     def make_utc(cls, v: datetime | None) -> datetime | None:
         if v is not None and v.tzinfo is None:
@@ -276,7 +286,6 @@ StatusField = Annotated[list[CaseStatus] | None, BeforeValidator(_parse_status_l
 
 class GetCasesQuery(BaseModel):
     status: StatusField = None
-    # Фильтр по эксперту — ищет дела где этот пользователь в списке экспертов
     expert_id: uuid.UUID | None = None
     client_id: uuid.UUID | None = None
     start_date: datetime | None = None

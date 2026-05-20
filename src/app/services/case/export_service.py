@@ -182,10 +182,8 @@ class CaseExcelExportService:
                 ws.cell(row=row_num, column=18, value=float(case_row.cash_amount) if case_row.cash_amount else 0)
                 ws.cell(row=row_num, column=19, value=float(case_row.remaining_debt) if case_row.remaining_debt else 0)
 
-                # Новое поле Debit (Колонка 20)
                 ws.cell(row=row_num, column=20, value=float(case_row.debit) if case_row.debit else 0)
 
-                # Сдвиг остальных колонок на +1
                 ws.cell(row=row_num, column=21, value=case_row.plaintiff or "")
                 ws.cell(row=row_num, column=22, value=case_row.defendant or "")
                 ws.cell(row=row_num, column=23, value=case_row.judge_name or "")

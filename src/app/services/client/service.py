@@ -65,7 +65,6 @@ class ClientService:
         if not client:
             return None
 
-        # Собираем все email адреса клиента и его контактов
         client_emails = set()
         if client.email:
             client_emails.add(client.email.lower())
@@ -73,19 +72,12 @@ class ClientService:
             if contact.email:
                 client_emails.add(contact.email.lower())
 
-        # Получаем последние 10 писем, связанных с клиентом:
-        # 1. Письма, где клиент - отправитель или получатель (по email)
-        # 2. Письма, привязанные к делам клиента
-        # 3. Письма, где sender_email совпадает с email клиента
         from src.app.services.mail.models import MailRecipient
 
-        # Подзапрос для получения писем через дела клиента
         cases_email_subq = select(MailMessage.id).join(Case, MailMessage.case_id == Case.id).where(Case.client_id == client.id)
 
-        # Подзапрос для получения писем через email клиента (как отправитель)
         sender_email_subq = select(MailMessage.id).where(MailMessage.sender_email.in_(list(client_emails))) if client_emails else None
 
-        # Подзапрос для получения писем через email клиента (как получатель)
         recipient_email_subq = (
             select(MailRecipient.message_id).where(MailRecipient.email_address.in_(list(client_emails))) if client_emails else None
         )
@@ -141,7 +133,14 @@ class ClientService:
         return response
 
     async def get_clients(
-        self, company_id: UUID, page: int, limit: int, client_type: str | None = None, search: str | None = None
+        self,
+        company_id: UUID,
+        page: int,
+        limit: int,
+        client_type: str | None = None,
+        search: str | None = None,
+        sort_by: str | None = None,
+        sort_dir: str = "desc",
     ) -> PaginatedResponse[ClientShortResponse]:
         case_counts_subq = (
             select(
@@ -166,11 +165,28 @@ class ClientService:
             pattern = f"%{search}%"
             stmt = stmt.where(or_(Client.name.ilike(pattern), Client.inn.ilike(pattern)))
 
+        sort_mapping = {
+            "name": Client.name,
+            "type": Client.type,
+            "created_at": Client.created_at,
+        }
+
+        if sort_by is not None and sort_by in sort_mapping:
+            sort_column = sort_mapping[sort_by]
+        else:
+            sort_column = Client.created_at
+
+        if sort_dir.lower() == "asc":
+            stmt = stmt.order_by(sort_column.asc())
+        else:
+            stmt = stmt.order_by(sort_column.desc())
+
         count_stmt = select(func.count()).select_from(stmt.subquery())
         total_items = (await self.db.execute(count_stmt)).scalar() or 0
 
         offset = (page - 1) * limit
-        stmt = stmt.order_by(Client.created_at.desc()).offset(offset).limit(limit)
+        stmt = stmt.offset(offset).limit(limit)
+
         result = await self.db.execute(stmt)
         rows = result.all()
 

@@ -1,4 +1,5 @@
 import uuid
+from typing import Literal
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -63,12 +64,22 @@ async def get_clients(
     search: str | None = None,
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
+    sort_by: Literal["name", "type", "created_at"] | None = Query(None, description="Поле для сортировки"),
+    sort_dir: Literal["asc", "desc"] = Query("desc", description="Направление сортировки"),
     db: AsyncSession = Depends(get_db),
     current_user: UserContext = Depends(get_current_user),
 ) -> PaginatedResponse[ClientShortResponse]:
     service = ClientService(db)
 
-    response = await service.get_clients(company_id=current_user.company_id, page=page, limit=limit, client_type=type, search=search)
+    response = await service.get_clients(
+        company_id=current_user.company_id,
+        page=page,
+        limit=limit,
+        client_type=type,
+        search=search,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+    )
 
     path = request.url.path
 
