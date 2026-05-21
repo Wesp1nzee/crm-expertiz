@@ -16,6 +16,7 @@ from src.app.services.client.schemas import (
     ClientCreate,
     ClientFullResponse,
     ClientShortResponse,
+    ClientType,
     ClientUpdate,
     ContactCreate,
     ContactUpdate,
@@ -35,6 +36,11 @@ class ClientService:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Эксперт не может создавать новых клиентов",
+            )
+
+        if client_data.legal_entity_type is not None and client_data.type != ClientType.legal:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Поле 'legal_entity_type' доступно только для клиентов типа 'legal'"
             )
 
         contact_data = client_data.initial_contact
@@ -221,6 +227,19 @@ class ClientService:
             return None
 
         update_dict = update_data.model_dump(exclude_unset=True)
+
+        new_type = update_dict.get("type", client.type)
+        if new_type != ClientType.legal:
+            update_dict["legal_entity_type"] = None
+
+        new_type = update_dict.get("type", client.type)
+        new_legal_type = update_dict.get("legal_entity_type", client.legal_entity_type)
+
+        if new_legal_type is not None and new_type != ClientType.legal:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Поле 'legal_entity_type' доступно только для клиентов типа 'legal'"
+            )
+
         for field, value in update_dict.items():
             setattr(client, field, value)
 

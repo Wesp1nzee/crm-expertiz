@@ -26,6 +26,13 @@ class ContactType(str, Enum):
     individual = "individual"
 
 
+class LegalEntityType(str, Enum):
+    """Тип юридического лица"""
+
+    OOO = "ООО"
+    IP = "ИП"
+
+
 class Client(TenantBase):
     __tablename__ = "clients"
 
@@ -38,6 +45,7 @@ class Client(TenantBase):
     inn: Mapped[str | None] = mapped_column(String(12), unique=True, index=True)  # ИНН клиента
     email: Mapped[str | None] = mapped_column(String(255), index=True)
     phone: Mapped[str | None] = mapped_column(String(50), index=True)
+    legal_entity_type: Mapped[LegalEntityType | None] = mapped_column(SQLEnum(LegalEntityType, native_enum=False), nullable=True, index=True)
     legal_address: Mapped[str | None] = mapped_column(Text)  # Юридический адрес
     actual_address: Mapped[str | None] = mapped_column(Text)  # Фактический адрес
     notes: Mapped[str | None] = mapped_column(Text)  # Примечание к клиенту

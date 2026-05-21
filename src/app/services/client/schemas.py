@@ -11,6 +11,11 @@ class ClientType(str, Enum):
     court = "court"
 
 
+class LegalEntityType(str, Enum):
+    OOO = "ООО"
+    IP = "ИП"
+
+
 class ContactType(str, Enum):
     legal_representative = "legal_representative"
     court_officer = "court_officer"
@@ -64,6 +69,7 @@ class ClientBase(BaseModel):
     legal_address: str | None = None
     actual_address: str | None = None
     notes: str | None = Field(None, description="Примечание к клиенту")
+    legal_entity_type: LegalEntityType | None = None
 
 
 class ClientCreate(ClientBase):
@@ -84,6 +90,7 @@ class ClientUpdate(BaseModel):
     legal_address: str | None = None
     actual_address: str | None = None
     notes: str | None = None
+    legal_entity_type: LegalEntityType | None = None
 
 
 class ClientShortResponse(ClientBase):

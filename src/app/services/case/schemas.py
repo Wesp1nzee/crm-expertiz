@@ -30,8 +30,9 @@ class RecentCaseItem(BaseModel):
 class FinancialSummaryResponse(BaseModel):
     total_revenue: Decimal
     pending_payments: int
-    pending_amount: Decimal
+    pending_amount: Decimal  # Сумма по делам, которые еще не завершены
     average_case_cost: Decimal
+    actual_debt_amount: Decimal  # Фактическая задолженность (только ФССП + ДОЛГ)
     total_cases: int
     completed_cases: int
     active_cases: int
@@ -181,6 +182,7 @@ class CaseBase(BaseModel):
     object_address: str
     status: CaseStatus = CaseStatus.in_work
     legal_entity_type: LegalEntityType = LegalEntityType.OOO
+    registration_date: datetime | None = None
     start_date: datetime
     deadline: datetime
     completion_date: datetime | None = None
@@ -213,6 +215,7 @@ class CaseUpdateRequest(BaseModel):
     object_address: str | None = None
     status: CaseStatus | None = None
     legal_entity_type: LegalEntityType | None = None
+    registration_date: datetime | None = None
     start_date: datetime | None = None
     deadline: datetime | None = None
     cost: Decimal | None = None
@@ -228,7 +231,9 @@ class CaseUpdateRequest(BaseModel):
     remarks: str | None = None
     judge_name: str | None = None
 
-    @field_validator("start_date", "deadline", "completion_date", "additional_materials_date", "execution_date", mode="after")
+    @field_validator(
+        "start_date", "deadline", "completion_date", "additional_materials_date", "execution_date", "registration_date", mode="after"
+    )
     @classmethod
     def make_utc(cls, v: datetime | None) -> datetime | None:
         if v is not None and v.tzinfo is None:

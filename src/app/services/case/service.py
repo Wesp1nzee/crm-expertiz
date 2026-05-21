@@ -8,7 +8,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException, status
-from sqlalchemy import asc, desc, func, select
+from sqlalchemy import asc, delete, desc, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.sql import Select
@@ -85,7 +85,6 @@ class CaseService:
         active_cases = [c for c in all_cases if c.status == CaseStatus.in_work]
 
         total_revenue = sum(Decimal(str(c.cost)) for c in completed_cases)
-        pending_cases = [c for c in all_cases if c.remaining_debt > 0]
 
         durations = [(c.completion_date - c.start_date).days for c in completed_cases if c.completion_date and c.start_date]
         avg_time = sum(durations) / len(durations) if durations else 0
@@ -104,6 +103,9 @@ class CaseService:
         recent_completed = [c for c in completed_cases if c.completion_date and c.completion_date >= month_ago]
         recent_completed_ids = [c.id for c in recent_completed]
 
+        pending_cases = [c for c in all_cases if c.remaining_debt > 0]
+        pending_amount = sum(Decimal(str(c.remaining_debt)) for c in pending_cases)
+
         unique_experts_count = 0
         if recent_completed_ids:
             experts_result = await self.db.execute(
@@ -112,6 +114,9 @@ class CaseService:
             unique_experts_count = experts_result.scalar() or 0
 
         throughput = len(recent_completed) / unique_experts_count if unique_experts_count > 0 else 0
+
+        actual_debt_cases = [c for c in all_cases if c.status in [CaseStatus.debt, CaseStatus.fssp] and c.remaining_debt > 0]
+        actual_debt_amount = sum(Decimal(str(c.remaining_debt)) for c in actual_debt_cases)
 
         overdue_count = 0
         for case in active_cases:
@@ -124,7 +129,8 @@ class CaseService:
         return FinancialSummaryResponse(
             total_revenue=total_revenue,
             pending_payments=len(pending_cases),
-            pending_amount=sum(Decimal(str(c.remaining_debt)) for c in pending_cases),
+            pending_amount=pending_amount,
+            actual_debt_amount=actual_debt_amount,
             average_case_cost=total_revenue / len(completed_cases) if completed_cases else Decimal("0.00"),
             total_cases=len(all_cases),
             completed_cases=len(completed_cases),
@@ -159,6 +165,9 @@ class CaseService:
 
         if case_data.execution_date and case_data.execution_date < case_data.start_date:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Дата выполнения не может быть раньше даты начала работ")
+
+        if case_data.registration_date and case_data.registration_date > case_data.start_date:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Дата регистрации не может быть позже даты начала работ")
 
         existing = await self.db.execute(select(Case).where(Case.number == case_data.number, Case.company_id == company_id))
         if existing.scalar():
@@ -319,6 +328,12 @@ class CaseService:
         update_dict = update_data.model_dump(exclude_unset=True)
 
         new_start = update_dict.get("start_date", case.start_date)
+        new_registration = update_dict.get("registration_date", case.registration_date)
+
+        if new_registration and new_start and new_registration > new_start:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Дата регистрации не может быть позже даты начала работ")
+
+        new_start = update_dict.get("start_date", case.start_date)
         new_deadline = update_dict.get("deadline", case.deadline)
         new_execution = update_dict.get("execution_date", case.execution_date)
 
@@ -357,16 +372,39 @@ class CaseService:
         if user_role == UserRole.EXPERT:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="У вас нет прав для удаления дела.")
 
-        stmt = select(Case).where(Case.id == case_id, Case.company_id == company_id, Case.deleted_at.is_(None))
+        stmt = select(Case).where(Case.id == case_id, Case.company_id == company_id)
         result = await self.db.execute(stmt)
         case = result.scalars().first()
 
         if not case:
             return False
 
-        case.deleted_at = datetime.utcnow()
-        await self.db.commit()
-        return True
+        try:
+            folder_ids_stmt = select(Folder.id).where(Folder.case_id == case_id, Folder.company_id == company_id)
+            folder_ids_result = await self.db.execute(folder_ids_stmt)
+            folder_ids = list(folder_ids_result.scalars().all())
+
+            if folder_ids:
+                await self.db.execute(delete(Document).where(Document.folder_id.in_(folder_ids), Document.company_id == company_id))
+
+            await self.db.execute(delete(Folder).where(Folder.case_id == case_id, Folder.company_id == company_id))
+
+            await self.db.execute(
+                update(MailMessage).where(MailMessage.case_id == case_id, MailMessage.company_id == company_id).values(case_id=None)
+            )
+
+            await self.db.execute(delete(case_experts).where(case_experts.c.case_id == case_id))
+
+            await self.db.execute(delete(Case).where(Case.id == case_id))
+
+            await self.db.commit()
+            logger.info(f"Case {case_id} deleted successfully.")
+            return True
+
+        except Exception as e:
+            await self.db.rollback()
+            logger.exception(f"CRITICAL: Error deleting case {case_id}")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Ошибка при удалении дела и связанных данных") from e
 
     async def get_cases(self, query_params: GetCasesQuery, user_id: UUID, user_role: UserRole, company_id: UUID) -> GetCasesResponse:
         base_where = [Case.deleted_at.is_(None), Case.company_id == company_id]

@@ -105,12 +105,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
-        # Применяем rate limiting только к определенным путям
         if request.url.path not in self.rate_limit_paths:
             return await call_next(request)
 
-        # Получаем IP клиента
-        client_ip = request.client.host if request.client else "unknown"
+        client_ip = (self._get_client_ip(request),)
         rate_limit_key = f"{request.method}:{request.url.path}:{client_ip}"
 
         try:
@@ -126,3 +124,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             )
 
         return await call_next(request)
+
+    def _get_client_ip(self, request: Request) -> str:
+        forwarded_for = request.headers.get("x-forwarded-for")
+        if forwarded_for:
+            return forwarded_for.split(",")[0].strip()
+        return request.client.host if request.client else "unknown"

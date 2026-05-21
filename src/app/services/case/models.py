@@ -96,7 +96,7 @@ class Case(TenantBase):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
-
+    registration_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     client: Mapped[Client] = relationship("Client", back_populates="cases")
     experts: Mapped[list[User]] = relationship(
         "User",
