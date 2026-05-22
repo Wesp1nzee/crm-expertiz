@@ -80,7 +80,7 @@ class ClientService:
 
         from src.app.services.mail.models import MailRecipient
 
-        cases_email_subq = select(MailMessage.id).join(Case, MailMessage.case_id == Case.id).where(Case.client_id == client.id)
+        from_cases_email_subq = select(MailMessage.id).join(Case, MailMessage.case_id == Case.id).where(Case.client_id == client.id)
 
         sender_email_subq = select(MailMessage.id).where(MailMessage.sender_email.in_(list(client_emails))) if client_emails else None
 
@@ -88,7 +88,7 @@ class ClientService:
             select(MailRecipient.message_id).where(MailRecipient.email_address.in_(list(client_emails))) if client_emails else None
         )
 
-        or_conditions: list[Any] = [MailMessage.id.in_(cases_email_subq)]
+        or_conditions: list[Any] = [MailMessage.id.in_(from_cases_email_subq)]
         if sender_email_subq is not None:
             or_conditions.append(MailMessage.id.in_(sender_email_subq))
         if recipient_email_subq is not None:
@@ -148,22 +148,7 @@ class ClientService:
         sort_by: str | None = None,
         sort_dir: str = "desc",
     ) -> PaginatedResponse[ClientShortResponse]:
-        case_counts_subq = (
-            select(
-                Case.client_id,
-                func.count(Case.id).label("total_cases"),
-                func.sum(case((Case.status == "in_work", 1), else_=0)).label("active_cases"),
-            )
-            .where(Case.company_id == company_id)
-            .group_by(Case.client_id)
-            .subquery()
-        )
-
-        stmt = (
-            select(Client, case_counts_subq.c.total_cases, case_counts_subq.c.active_cases)
-            .outerjoin(case_counts_subq, Client.id == case_counts_subq.c.client_id)
-            .where(Client.company_id == company_id)
-        )
+        stmt = select(Client).where(Client.company_id == company_id)
 
         if client_type:
             stmt = stmt.where(Client.type == client_type)
@@ -175,6 +160,8 @@ class ClientService:
             "name": Client.name,
             "type": Client.type,
             "created_at": Client.created_at,
+            "total_cases": Client.total_cases,
+            "active_cases": Client.active_cases,
         }
 
         if sort_by is not None and sort_by in sort_mapping:
@@ -194,14 +181,9 @@ class ClientService:
         stmt = stmt.offset(offset).limit(limit)
 
         result = await self.db.execute(stmt)
-        rows = result.all()
+        clients = result.scalars().all()
 
-        items = []
-        for row in rows:
-            client_obj = row.Client
-            client_obj.active_cases = row.active_cases or 0
-            client_obj.total_cases = row.total_cases or 0
-            items.append(ClientShortResponse.model_validate(client_obj))
+        items = [ClientShortResponse.model_validate(client) for client in clients]
 
         total_pages = math.ceil(total_items / limit) if total_items > 0 else 1
 

@@ -327,20 +327,26 @@ class CaseService:
 
         update_dict = update_data.model_dump(exclude_unset=True)
 
-        new_start = update_dict.get("start_date", case.start_date)
-        new_registration = update_dict.get("registration_date", case.registration_date)
+        if "client_id" in update_dict and update_dict["client_id"] is not None:
+            new_client_id = update_dict["client_id"]
+            client = await self.db.get(Client, new_client_id)
+            if not client or client.company_id != company_id:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail=f"Клиент с ID {new_client_id} не найден или не принадлежит компании"
+                )
 
-        if new_registration and new_start and new_registration > new_start:
+        new_start_date = update_dict.get("start_date", case.start_date)
+        new_registration_date = update_dict.get("registration_date", case.registration_date)
+        new_deadline = update_dict.get("deadline", case.deadline)
+        new_execution_date = update_dict.get("execution_date", case.execution_date)
+
+        if new_registration_date and new_start_date and new_registration_date > new_start_date:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Дата регистрации не может быть позже даты начала работ")
 
-        new_start = update_dict.get("start_date", case.start_date)
-        new_deadline = update_dict.get("deadline", case.deadline)
-        new_execution = update_dict.get("execution_date", case.execution_date)
-
-        if new_deadline and new_start and new_deadline < new_start:
+        if new_deadline and new_start_date and new_deadline < new_start_date:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Срок выполнения не может быть раньше даты начала")
 
-        if new_execution and new_start and new_execution < new_start:
+        if new_execution_date and new_start_date and new_execution_date < new_start_date:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Дата выполнения не может быть раньше даты начала работ")
 
         for field, value in update_dict.items():

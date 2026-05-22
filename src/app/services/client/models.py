@@ -3,9 +3,9 @@ from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from sqlalchemy import UUID, Boolean, DateTime, ForeignKey, Index, String, Text, func
+from sqlalchemy import UUID, Boolean, DateTime, ForeignKey, Index, String, Text, func, select, text
 from sqlalchemy import Enum as SQLEnum
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, column_property, mapped_column, relationship
 
 from src.app.core.database.base import TenantBase
 
@@ -51,9 +51,18 @@ class Client(TenantBase):
     notes: Mapped[str | None] = mapped_column(Text)  # Примечание к клиенту
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())  # Дата обновления
+
     contacts: Mapped[list[Contact]] = relationship("Contact", back_populates="client", cascade="all, delete-orphan")  # Контакты клиента
     cases: Mapped[list[Case]] = relationship("Case", back_populates="client")  # Список дел клиента
     company: Mapped[Company] = relationship("Company", back_populates="clients")
+
+    total_cases: Mapped[int] = column_property(
+        select(func.count()).select_from(text("cases")).where(text("cases.client_id = clients.id")).scalar_subquery()
+    )
+
+    active_cases: Mapped[int] = column_property(
+        select(func.count()).select_from(text("cases")).where(text("cases.client_id = clients.id AND cases.status = 'in_work'")).scalar_subquery()
+    )
 
     __table_args__ = (
         Index("ix_clients_company_id_type", "company_id", "type"),
