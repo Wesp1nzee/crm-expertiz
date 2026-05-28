@@ -190,7 +190,7 @@ class CaseService:
             if len(experts) != len(case_data.expert_ids):
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Один или несколько экспертов не найдены")
 
-        data = case_data.model_dump(exclude={"expert_ids", "expert_painting", "archive_status"})
+        data = case_data.model_dump(exclude={"expert_ids", "expert_painting", "archive_status", "parent_folder_id"})
         data["company_id"] = company_id
 
         decimal_fields = ["cost", "bank_transfer_amount", "cash_amount", "remaining_debt", "debit"]
@@ -213,7 +213,34 @@ class CaseService:
 
             await self.db.flush()
 
-            root_folder = Folder(name=f"Дело №{case.number}", case_id=case.id, company_id=company_id, created_by_id=user_id, parent_id=None)
+            effective_parent_id = None
+
+            if case_data.parent_folder_id:
+                parent_folder = await self.db.get(Folder, case_data.parent_folder_id)
+                if not parent_folder or parent_folder.company_id != company_id:
+                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Родительская папка не найдена")
+                if user_role == UserRole.EXPERT and parent_folder.created_by_id != user_id:  # type: ignore[comparison-overlap]
+                    if not (
+                        parent_folder.case_id
+                        and await self.db.execute(
+                            select(case_experts.c.case_id).where(
+                                case_experts.c.case_id == parent_folder.case_id, case_experts.c.user_id == user_id
+                            )
+                        )
+                    ).scalar():
+                        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет прав для размещения дела в этой папке")
+
+                if parent_folder.case_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Нельзя разместить дело внутри папки, которая уже принадлежит другому делу",
+                    )
+
+                effective_parent_id = parent_folder.id
+
+            root_folder = Folder(
+                name=f"Дело №{case.number}", case_id=case.id, company_id=company_id, created_by_id=user_id, parent_id=effective_parent_id
+            )
             self.db.add(root_folder)
             await self.db.flush()
 
@@ -547,3 +574,15 @@ class CaseService:
 
     def _to_case_response(self, case: Case) -> CaseResponse:
         return CaseResponse.model_validate(case).model_copy(update={"experts": [UserResponse.model_validate(u) for u in (case.experts or [])]})
+
+    async def _is_descendant(self, potential_parent_id: UUID, folder_id: UUID) -> bool:
+        """Проверяет, является ли folder_id потомком potential_parent_id"""
+        if potential_parent_id == folder_id:
+            return True
+
+        base = select(Folder.parent_id).where(Folder.id == folder_id).cte(name="ancestors", recursive=True)
+        recursive = select(Folder.parent_id).join(base, Folder.id == base.c.parent_id)
+        all_ancestors = base.union_all(recursive)
+
+        result = await self.db.execute(select(1).where(all_ancestors.c.parent_id == potential_parent_id).limit(1))
+        return result.scalar_one_or_none() is not None

@@ -5,6 +5,8 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from src.app.core.schemas.base import PaginatedResponse, PaginationMeta
+
 
 class EntryType(str, Enum):
     FOLDER = "folder"
@@ -124,3 +126,32 @@ class RestoreOperationResponse(BaseModel):
     message: str
     restored: dict[str, int]
     model_config = ConfigDict(from_attributes=True)
+
+
+class FolderListItem(BaseModel):
+    """Элемент списка папок для ленивой загрузки"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    parent_id: uuid.UUID | None = None
+    case_id: uuid.UUID | None = None
+    case_number: str | None = None
+    created_at: datetime
+    created_by_id: uuid.UUID
+    created_by_name: str | None = None
+    is_case_root: bool = False
+    children_count: int = 0
+
+
+class FolderListResponse(PaginatedResponse[FolderListItem]):
+    """Ответ со списком папок с пагинацией"""
+
+    meta: PaginationMeta
+
+
+class DocumentsBulkMoveRequest(BaseModel):
+    folder_ids: list[uuid.UUID] = []
+    document_ids: list[uuid.UUID] = []
+    target_folder_id: uuid.UUID | None = None

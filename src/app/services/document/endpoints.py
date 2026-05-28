@@ -21,10 +21,13 @@ from src.app.services.document.schemas import (
     DocumentDownloadUrl,
     DocumentResponse,
     DocumentsBulkDeleteRequest,
+    DocumentsBulkMoveRequest,
     DocumentUpdate,
     EntryType,
     FileSystemEntry,
     FolderCreate,
+    FolderListItem,
+    FolderListResponse,
     FolderResponse,
     FolderUpdate,
     RestoreOperationResponse,
@@ -429,4 +432,62 @@ async def list_trash(
         user_role=current_user.role,
         page=page,
         limit=limit,
+    )
+
+
+@router.get(
+    "/folders/list",
+    response_model=FolderListResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Получить список папок",
+    description=(
+        "Возвращает список папок с пагинацией. "
+        "Если parent_id не указан - возвращает корневые папки. "
+        "Параметр include_case_folders позволяет исключить папки, привязанные к делам."
+    ),
+)
+async def get_folders_list(
+    parent_id: uuid.UUID | None = Query(None, description="ID родительской папки (None для корневых папок)"),
+    include_case_folders: bool = Query(True, description="Показывать папки, привязанные к делам"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+) -> PaginatedResponse[FolderListItem]:
+    """Получить список папок с ленивой загрузкой"""
+    service = DocumentService(db)
+    return await service.get_folders_list(
+        company_id=current_user.company_id,
+        user_id=current_user.id,
+        user_role=current_user.role,
+        parent_id=parent_id,
+        include_case_folders=include_case_folders,
+        page=page,
+        limit=limit,
+    )
+
+
+@router.patch(
+    "/bulk-move",
+    status_code=status.HTTP_200_OK,
+    summary="Массовое перемещение файлов и папок",
+    description="Перемещает выбранные документы и папки в указанную целевую папку.",
+)
+async def move_documents_bulk(
+    request: DocumentsBulkMoveRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+) -> dict[str, str]:
+    if not request.folder_ids and not request.document_ids:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Не выбраны элементы для перемещения")
+
+    service = DocumentService(db)
+
+    return await service.move_bulk(
+        folder_ids=request.folder_ids,
+        document_ids=request.document_ids,
+        target_folder_id=request.target_folder_id,
+        company_id=current_user.company_id,
+        user_id=current_user.id,
+        user_role=current_user.role,
     )

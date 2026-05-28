@@ -22,7 +22,7 @@ from src.app.services.client.schemas import (
     ContactUpdate,
     RecentEmailResponse,
 )
-from src.app.services.mail.models import MailMessage
+from src.app.services.mail.models import MailMessage, MailRecipient
 from src.app.services.user.models import UserRole
 
 
@@ -30,8 +30,15 @@ class ClientService:
     def __init__(self, db_session: AsyncSession) -> None:
         self.db = db_session
 
+    async def _load_client_for_response(self, client_id: UUID, company_id: UUID) -> Client:
+        stmt = select(Client).where(Client.id == client_id, Client.company_id == company_id).options(selectinload(Client.contacts))
+        result = await self.db.execute(stmt)
+        client = result.scalar_one()
+        return client
+
     async def create_client(self, client_data: ClientCreate, company_id: UUID, user_role: UserRole) -> ClientFullResponse:
         """Создает клиента с привязкой к компании"""
+
         if user_role == UserRole.EXPERT:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -58,27 +65,20 @@ class ClientService:
             self.db.add(contact)
 
         await self.db.commit()
-        await self.db.refresh(client, attribute_names=["contacts"])
 
-        return ClientFullResponse.model_validate(client)
+        return ClientFullResponse.model_validate(await self._load_client_for_response(client.id, company_id))
 
     async def get_client_by_id(self, client_id: str, company_id: UUID, user_role: UserRole) -> ClientFullResponse | None:
-        """Получает полную информацию о клиенте (только для своей компании)"""
-        stmt = select(Client).options(selectinload(Client.contacts)).where(Client.id == UUID(client_id), Client.company_id == company_id)
-        result = await self.db.execute(stmt)
-        client = result.scalars().first()
+        """Получает полную информацию о клиенте"""
 
+        client = await self._load_client_for_response(UUID(client_id), company_id)
         if not client:
             return None
 
-        client_emails = set()
-        if client.email:
-            client_emails.add(client.email.lower())
+        client_emails = {client.email.lower()} if client.email else set()
         for contact in client.contacts:
             if contact.email:
                 client_emails.add(contact.email.lower())
-
-        from src.app.services.mail.models import MailRecipient
 
         from_cases_email_subq = select(MailMessage.id).join(Case, MailMessage.case_id == Case.id).where(Case.client_id == client.id)
 
@@ -116,6 +116,7 @@ class ClientService:
             .order_by(MailMessage.sent_at.desc())
             .limit(10)
         )
+
         emails_result = await self.db.execute(emails_stmt)
         recent_emails = [
             RecentEmailResponse(
@@ -148,6 +149,8 @@ class ClientService:
         sort_by: str | None = None,
         sort_dir: str = "desc",
     ) -> PaginatedResponse[ClientShortResponse]:
+        """Получает список клиентов с пагинацией"""
+
         stmt = select(Client).where(Client.company_id == company_id)
 
         if client_type:
@@ -164,19 +167,14 @@ class ClientService:
             "active_cases": Client.active_cases,
         }
 
-        if sort_by is not None and sort_by in sort_mapping:
+        if sort_by in sort_mapping:
             sort_column = sort_mapping[sort_by]
         else:
             sort_column = Client.created_at
-
-        if sort_dir.lower() == "asc":
-            stmt = stmt.order_by(sort_column.asc())
-        else:
-            stmt = stmt.order_by(sort_column.desc())
+        stmt = stmt.order_by(sort_column.asc() if sort_dir.lower() == "asc" else sort_column.desc())
 
         count_stmt = select(func.count()).select_from(stmt.subquery())
         total_items = (await self.db.execute(count_stmt)).scalar() or 0
-
         offset = (page - 1) * limit
         stmt = stmt.offset(offset).limit(limit)
 
@@ -186,15 +184,20 @@ class ClientService:
         items = [ClientShortResponse.model_validate(client) for client in clients]
 
         total_pages = math.ceil(total_items / limit) if total_items > 0 else 1
-
         meta = PaginationMeta(
-            total_items=total_items, total_pages=total_pages, current_page=page, per_page=limit, has_next=page < total_pages, has_prev=page > 1
+            total_items=total_items,
+            total_pages=total_pages,
+            current_page=page,
+            per_page=limit,
+            has_next=page < total_pages,
+            has_prev=page > 1,
         )
 
         return PaginatedResponse[ClientShortResponse](items=items, meta=meta)
 
     async def update_client(self, client_id: str, update_data: ClientUpdate, company_id: UUID, user_role: UserRole) -> ClientFullResponse | None:
-        """Обновляет данные клиента (с проверкой прав и компании)"""
+        """Обновляет данные клиента"""
+
         if user_role == UserRole.EXPERT:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -209,14 +212,12 @@ class ClientService:
             return None
 
         update_dict = update_data.model_dump(exclude_unset=True)
-
         new_type = update_dict.get("type", client.type)
+
         if new_type != ClientType.legal:
             update_dict["legal_entity_type"] = None
 
-        new_type = update_dict.get("type", client.type)
         new_legal_type = update_dict.get("legal_entity_type", client.legal_entity_type)
-
         if new_legal_type is not None and new_type != ClientType.legal:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail="Поле 'legal_entity_type' доступно только для клиентов типа 'legal'"
@@ -226,10 +227,12 @@ class ClientService:
             setattr(client, field, value)
 
         await self.db.commit()
+
         return await self.get_client_by_id(str(client.id), company_id, user_role)
 
     async def delete_client(self, client_id: str, company_id: UUID, user_role: UserRole) -> bool:
-        """Удаляет клиента (только для своей компании)"""
+        """Удаляет клиента"""
+
         if user_role == UserRole.EXPERT:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -295,7 +298,6 @@ class ClientService:
         return [(row.id, row.name) for row in result.all()]
 
     async def create_contact(self, client_id: str, contact_data: ContactCreate, company_id: UUID, user_role: UserRole) -> Contact:
-        """Создает контакт для клиента"""
         if user_role == UserRole.EXPERT:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -320,13 +322,11 @@ class ClientService:
         return contact
 
     async def get_contacts(self, client_id: str, company_id: UUID) -> Sequence[Contact]:
-        """Получает все контакты клиента"""
         stmt = select(Contact).where(Contact.client_id == UUID(client_id), Contact.company_id == company_id)
         result = await self.db.execute(stmt)
         return result.scalars().all()
 
     async def update_contact(self, contact_id: str, update_data: ContactUpdate, company_id: UUID, user_role: UserRole) -> Contact:
-        """Обновляет контакт"""
         if user_role == UserRole.EXPERT:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -349,7 +349,6 @@ class ClientService:
         return contact
 
     async def delete_contact(self, contact_id: str, company_id: UUID, user_role: UserRole) -> bool:
-        """Удаляет контакт"""
         if user_role == UserRole.EXPERT:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

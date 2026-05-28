@@ -33,7 +33,7 @@ from src.app.core.schemas.base import PaginatedResponse, PaginationMeta
 from src.app.core.storage.s3 import s3_storage
 from src.app.services.case.models import Case, case_experts
 from src.app.services.document.models import Document, Folder, ShareType
-from src.app.services.document.schemas import FileSystemEntry, FolderCreate, ShareInfoBrief
+from src.app.services.document.schemas import FileSystemEntry, FolderCreate, FolderListItem, ShareInfoBrief
 from src.app.services.share.models import DocumentShare, ShareBatch
 from src.app.services.user.models import User, UserRole
 
@@ -1052,91 +1052,219 @@ class DocumentService:
         if tasks:
             await asyncio.gather(*tasks)
 
-    async def _process_zip_entry(
+    async def move_bulk(
         self,
-        doc: Document,
-        folder_path: str,
-        zip_file: zipfile.ZipFile,
-        semaphore: asyncio.Semaphore,
-        zip_lock: asyncio.Lock,
-    ) -> None:
-        """Обрабатывает отдельный документ для добавления в ZIP."""
-        async with semaphore:
-            try:
-                async with s3_storage.get_file_stream(doc.file_path) as stream:
-                    content = await stream.read()
-                async with zip_lock:
-                    zip_path = os.path.join(folder_path.strip("/"), doc.title)
-                    await asyncio.to_thread(zip_file.writestr, zip_path, content)
-            except Exception as e:
-                logger.error("Ошибка при упаковке файла %s: %s", doc.id, e)
-
-    async def _load_share_info_map(
-        self,
-        owner_id: uuid.UUID | None,
+        folder_ids: list[uuid.UUID] | None,
+        document_ids: list[uuid.UUID] | None,
+        target_folder_id: uuid.UUID | None,
         company_id: uuid.UUID,
-        document_ids: list[uuid.UUID],
-        folder_ids: list[uuid.UUID],
-    ) -> dict[tuple[str, uuid.UUID], ShareInfoBrief]:
-        """Загружает информацию о расшаривании для элементов."""
-        if not owner_id or (not document_ids and not folder_ids):
-            return {}
+        user_id: uuid.UUID,
+        user_role: UserRole,
+    ) -> dict[str, str]:
+        """Перемещает выбранные элементы в другую папку."""
 
-        active_batch_sq = (
-            select(ShareBatch.id, ShareBatch.share_type)
-            .where(
-                ShareBatch.owner_id == owner_id,
-                ShareBatch.company_id == company_id,
-                ShareBatch.is_active.is_(True),
-            )
-            .subquery()
-        )
+        if target_folder_id and folder_ids and target_folder_id in folder_ids:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Невозможно переместить папку саму в себя")
 
-        result: dict[tuple[str, uuid.UUID], dict[Any, Any]] = defaultdict(lambda: {"recipient_count": 0, "public_link_count": 0})
+        target_case_id = None
 
-        if document_ids:
-            doc_agg = await self.db.execute(
-                select(
-                    DocumentShare.document_id,
-                    active_batch_sq.c.share_type,
-                    func.count(DocumentShare.id).label("cnt"),
+        if target_folder_id:
+            target_folder_result = await self.db.execute(
+                select(Folder).where(
+                    Folder.id == target_folder_id,
+                    Folder.company_id == company_id,
+                    ~Folder.is_deleted,
                 )
-                .join(active_batch_sq, DocumentShare.batch_id == active_batch_sq.c.id)
-                .where(
-                    DocumentShare.document_id.in_(document_ids),
-                    DocumentShare.document_id.isnot(None),
-                )
-                .group_by(DocumentShare.document_id, active_batch_sq.c.share_type)
             )
-            for resource_id, share_type, cnt in doc_agg.all():
-                key = ("document", resource_id)
-                if share_type == ShareType.USER:
-                    result[key]["recipient_count"] += cnt
-                else:
-                    result[key]["public_link_count"] += cnt
+            target_folder = target_folder_result.scalar_one_or_none()
+            if not target_folder:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Целевая папка не найдена")
+            target_case_id = target_folder.case_id
 
         if folder_ids:
-            folder_agg = await self.db.execute(
-                select(
-                    DocumentShare.folder_id,
-                    active_batch_sq.c.share_type,
-                    func.count(DocumentShare.id).label("cnt"),
-                )
-                .join(active_batch_sq, DocumentShare.batch_id == active_batch_sq.c.id)
+            folder_stmt = (
+                update(Folder)
                 .where(
-                    DocumentShare.folder_id.in_(folder_ids),
-                    DocumentShare.folder_id.isnot(None),
+                    Folder.id.in_(folder_ids),
+                    Folder.company_id == company_id,
+                    ~Folder.is_deleted,
                 )
-                .group_by(DocumentShare.folder_id, active_batch_sq.c.share_type)
+                .values(parent_id=target_folder_id, **({"case_id": target_case_id} if target_folder_id else {}))
             )
-            for resource_id, share_type, cnt in folder_agg.all():
-                key = ("folder", resource_id)
-                if share_type == ShareType.USER:
-                    result[key]["recipient_count"] += cnt
-                else:
-                    result[key]["public_link_count"] += cnt
+            if user_role == UserRole.EXPERT:
+                folder_stmt = folder_stmt.where(Folder.created_by_id == user_id)
+            await self.db.execute(folder_stmt)
 
-        return {k: ShareInfoBrief(**v) for k, v in result.items()}
+        if document_ids:
+            doc_stmt = (
+                update(Document)
+                .where(
+                    Document.id.in_(document_ids),
+                    Document.company_id == company_id,
+                    ~Document.is_deleted,
+                )
+                .values(folder_id=target_folder_id, **({"case_id": target_case_id} if target_folder_id else {}))
+            )
+            if user_role == UserRole.EXPERT:
+                doc_stmt = doc_stmt.where(Document.uploaded_by_id == user_id)
+            await self.db.execute(doc_stmt)
+
+        await self.db.commit()
+
+        return {"message": "Элементы успешно перемещены"}
+
+    async def get_folders_list(
+        self,
+        company_id: uuid.UUID,
+        user_id: uuid.UUID,
+        user_role: UserRole,
+        parent_id: uuid.UUID | None = None,
+        include_case_folders: bool = True,
+        page: int = 1,
+        limit: int = 100,
+    ) -> PaginatedResponse[FolderListItem]:
+        """
+        Получить список папок с пагинацией.
+        """
+        import math
+
+        from sqlalchemy import func
+
+        stmt = (
+            select(
+                Folder.id,
+                Folder.name,
+                Folder.parent_id,
+                Folder.case_id,
+                Folder.created_at,
+                Folder.created_by_id,
+                User.full_name.label("created_by_name"),
+                Case.number.label("case_number"),
+                Case.root_folder_id.label("case_root_folder_id"),
+            )
+            .join(User, Folder.created_by_id == User.id, isouter=True)
+            .outerjoin(Case, Folder.case_id == Case.id)
+            .where(
+                Folder.company_id == company_id,
+                ~Folder.is_deleted,
+            )
+        )
+
+        if parent_id is None:
+            stmt = stmt.where(Folder.parent_id.is_(None))
+        else:
+            stmt = stmt.where(Folder.parent_id == parent_id)
+
+        if user_role == UserRole.EXPERT:
+            from src.app.services.case.models import case_experts
+
+            expert_case_subq = select(case_experts.c.case_id).where(case_experts.c.user_id == user_id).scalar_subquery()
+            stmt = stmt.where(
+                or_(
+                    Folder.created_by_id == user_id,
+                    Folder.case_id.in_(expert_case_subq),
+                )
+            )
+
+        if not include_case_folders:
+            stmt = stmt.where(Folder.case_id.is_(None))
+
+        count_stmt = select(func.count()).select_from(stmt.subquery())
+        total_result = await self.db.execute(count_stmt)
+        total = total_result.scalar() or 0
+
+        offset = (page - 1) * limit
+        stmt = stmt.order_by(Folder.created_at.desc()).offset(offset).limit(limit)
+
+        result = await self.db.execute(stmt)
+        rows = result.all()
+
+        folder_ids = [row[0] for row in rows]
+        if folder_ids:
+            children_count_stmt = (
+                select(Folder.parent_id, func.count(Folder.id).label("count"))
+                .where(Folder.parent_id.in_(folder_ids), Folder.company_id == company_id, ~Folder.is_deleted, Folder.case_id.is_(None))
+                .group_by(Folder.parent_id)
+            )
+            children_result = await self.db.execute(children_count_stmt)
+            children_counts = {row.parent_id: row.count for row in children_result.all()}
+        else:
+            children_counts = {}
+
+        items = []
+        for row in rows:
+            items.append(
+                FolderListItem(
+                    id=row.id,
+                    name=row.name,
+                    parent_id=row.parent_id,
+                    case_id=row.case_id,
+                    case_number=row.case_number,
+                    created_at=row.created_at,
+                    created_by_id=row.created_by_id,
+                    created_by_name=row.created_by_name,
+                    is_case_root=row.case_id is not None and row.id == row.case_root_folder_id,
+                    children_count=children_counts.get(row.id, 0),
+                )
+            )
+
+        total_pages = max(1, math.ceil(total / limit))
+
+        return PaginatedResponse(
+            items=items,
+            meta=PaginationMeta(
+                total_items=total,
+                total_pages=total_pages,
+                current_page=page,
+                per_page=limit,
+                has_next=page < total_pages,
+                has_prev=page > 1,
+            ),
+        )
+
+    async def _check_folder_access(
+        self,
+        folder: Folder,
+        user_id: uuid.UUID,
+        user_role: UserRole,
+        company_id: uuid.UUID,
+    ) -> bool:
+        """Проверяет доступ пользователя к папке."""
+        if folder.company_id != company_id:
+            return False
+        if user_role in (UserRole.ADMIN, UserRole.CEO, UserRole.ACCOUNTANT):
+            return True
+        return folder.created_by_id == user_id
+
+    async def _check_document_access(
+        self,
+        document: Document,
+        user_id: uuid.UUID,
+        user_role: UserRole,
+        company_id: uuid.UUID,
+    ) -> bool:
+        """Проверяет доступ пользователя к документу."""
+        if document.company_id != company_id:
+            return False
+        if user_role in (UserRole.ADMIN, UserRole.CEO, UserRole.ACCOUNTANT):
+            return True
+        return document.uploaded_by_id == user_id
+
+    async def _is_descendant_folder(
+        self,
+        potential_parent_id: uuid.UUID,
+        folder_id: uuid.UUID,
+    ) -> bool:
+        """Проверяет, является ли папка потомком другой папки."""
+        if folder_id == potential_parent_id:
+            return False
+        base_case = select(Folder.parent_id.label("ancestor_id")).where(Folder.id == potential_parent_id, ~Folder.is_deleted).cte(recursive=True)
+        recursive_case = (
+            select(Folder.parent_id.label("ancestor_id")).join(base_case, Folder.id == base_case.c.ancestor_id).where(~Folder.is_deleted)
+        )
+        all_ancestors = base_case.union_all(recursive_case)
+        result = await self.db.execute(select(1).where(all_ancestors.c.ancestor_id == folder_id))
+        return result.scalar_one_or_none() is not None
 
     async def _collect_file_paths_in_tree(self, root_ids: list[uuid.UUID], company_id: uuid.UUID) -> list[str]:
         """Собирает пути файлов в дереве папок."""
@@ -1227,46 +1355,88 @@ class DocumentService:
             .values(case_id=new_case_id)
         )
 
-    async def _is_descendant_folder(
+    async def _process_zip_entry(
         self,
-        potential_parent_id: uuid.UUID,
-        folder_id: uuid.UUID,
-    ) -> bool:
-        """Проверяет, является ли папка потомком другой папки."""
-        if folder_id == potential_parent_id:
-            return False
-        base_case = select(Folder.parent_id.label("ancestor_id")).where(Folder.id == potential_parent_id, ~Folder.is_deleted).cte(recursive=True)
-        recursive_case = (
-            select(Folder.parent_id.label("ancestor_id")).join(base_case, Folder.id == base_case.c.ancestor_id).where(~Folder.is_deleted)
+        doc: Document,
+        folder_path: str,
+        zip_file: zipfile.ZipFile,
+        semaphore: asyncio.Semaphore,
+        zip_lock: asyncio.Lock,
+    ) -> None:
+        """Обрабатывает отдельный документ для добавления в ZIP."""
+        async with semaphore:
+            try:
+                async with s3_storage.get_file_stream(doc.file_path) as stream:
+                    content = await stream.read()
+                async with zip_lock:
+                    zip_path = os.path.join(folder_path.strip("/"), doc.title)
+                    await asyncio.to_thread(zip_file.writestr, zip_path, content)
+            except Exception as e:
+                logger.error("Ошибка при упаковке файла %s: %s", doc.id, e)
+
+    async def _load_share_info_map(
+        self,
+        owner_id: uuid.UUID | None,
+        company_id: uuid.UUID,
+        document_ids: list[uuid.UUID],
+        folder_ids: list[uuid.UUID],
+    ) -> dict[tuple[str, uuid.UUID], ShareInfoBrief]:
+        """Загружает информацию о расшаривании для элементов."""
+        if not owner_id or (not document_ids and not folder_ids):
+            return {}
+
+        active_batch_sq = (
+            select(ShareBatch.id, ShareBatch.share_type)
+            .where(
+                ShareBatch.owner_id == owner_id,
+                ShareBatch.company_id == company_id,
+                ShareBatch.is_active.is_(True),
+            )
+            .subquery()
         )
-        all_ancestors = base_case.union_all(recursive_case)
-        result = await self.db.execute(select(1).where(all_ancestors.c.ancestor_id == folder_id))
-        return result.scalar_one_or_none() is not None
 
-    async def _check_document_access(
-        self,
-        document: Document,
-        user_id: uuid.UUID,
-        user_role: UserRole,
-        company_id: uuid.UUID,
-    ) -> bool:
-        """Проверяет доступ пользователя к документу."""
-        if document.company_id != company_id:
-            return False
-        if user_role in (UserRole.ADMIN, UserRole.CEO, UserRole.ACCOUNTANT):
-            return True
-        return document.uploaded_by_id == user_id
+        result: dict[tuple[str, uuid.UUID], dict[Any, Any]] = defaultdict(lambda: {"recipient_count": 0, "public_link_count": 0})
 
-    async def _check_folder_access(
-        self,
-        folder: Folder,
-        user_id: uuid.UUID,
-        user_role: UserRole,
-        company_id: uuid.UUID,
-    ) -> bool:
-        """Проверяет доступ пользователя к папке."""
-        if folder.company_id != company_id:
-            return False
-        if user_role in (UserRole.ADMIN, UserRole.CEO, UserRole.ACCOUNTANT):
-            return True
-        return folder.created_by_id == user_id
+        if document_ids:
+            doc_agg = await self.db.execute(
+                select(
+                    DocumentShare.document_id,
+                    active_batch_sq.c.share_type,
+                    func.count(DocumentShare.id).label("cnt"),
+                )
+                .join(active_batch_sq, DocumentShare.batch_id == active_batch_sq.c.id)
+                .where(
+                    DocumentShare.document_id.in_(document_ids),
+                    DocumentShare.document_id.isnot(None),
+                )
+                .group_by(DocumentShare.document_id, active_batch_sq.c.share_type)
+            )
+            for resource_id, share_type, cnt in doc_agg.all():
+                key = ("document", resource_id)
+                if share_type == ShareType.USER:
+                    result[key]["recipient_count"] += cnt
+                else:
+                    result[key]["public_link_count"] += cnt
+
+        if folder_ids:
+            folder_agg = await self.db.execute(
+                select(
+                    DocumentShare.folder_id,
+                    active_batch_sq.c.share_type,
+                    func.count(DocumentShare.id).label("cnt"),
+                )
+                .join(active_batch_sq, DocumentShare.batch_id == active_batch_sq.c.id)
+                .where(
+                    DocumentShare.folder_id.in_(folder_ids),
+                    DocumentShare.folder_id.isnot(None),
+                )
+                .group_by(DocumentShare.folder_id, active_batch_sq.c.share_type)
+            )
+            for resource_id, share_type, cnt in folder_agg.all():
+                key = ("folder", resource_id)
+                if share_type == ShareType.USER:
+                    result[key]["recipient_count"] += cnt
+                else:
+                    result[key]["public_link_count"] += cnt
+
+        return {k: ShareInfoBrief(**v) for k, v in result.items()}

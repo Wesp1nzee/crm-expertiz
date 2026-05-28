@@ -203,6 +203,7 @@ class CaseBase(BaseModel):
 
 class CaseCreateRequest(CaseBase):
     expert_ids: list[uuid.UUID] = Field(default_factory=list)
+    parent_folder_id: uuid.UUID | None = Field(default=None, description="ID родительской папки для размещения корневой папки дела (опционально)")
 
 
 class CaseUpdateRequest(BaseModel):
