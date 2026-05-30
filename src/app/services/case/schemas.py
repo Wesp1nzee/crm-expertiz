@@ -268,6 +268,7 @@ class SortField(str, Enum):
     REMAINING_DEBT = "remaining_debt"
     CLIENT_NAME = "client_name"
     EXPERT_NAME = "expert_name"
+    EXECUTION_DATE = "execution_date"
 
 
 class SortOrder(str, Enum):
