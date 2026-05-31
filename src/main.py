@@ -5,12 +5,19 @@ from contextlib import asynccontextmanager
 from typing import Any, cast
 
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from src.app.core.config import settings
 from src.app.core.database import all_models  # noqa: F401
 from src.app.core.database.session import AsyncSessionLocal, engine
+from src.app.core.exception_handlers import (
+    global_exception_handler,
+    http_exception_handler,
+    validation_exception_handler,
+)
 from src.app.core.middleware.logging import LoggingMiddleware
 from src.app.core.middleware.rate_limit import RateLimitMiddleware
 from src.app.core.monitoring.endpoints import router as monitoring_router
@@ -104,7 +111,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="CRM Expertiz API", lifespan=lifespan)
 
-# CORS Configuration - используем конкретные источники из настроек
 cors_origins = [origin.strip() for origin in settings.CORS_ORIGINS.split(",")]
 app.add_middleware(
     CORSMiddleware,
@@ -114,7 +120,6 @@ app.add_middleware(
     allow_headers=["Content-Type"],
 )
 
-# Rate Limiting
 app.add_middleware(
     RateLimitMiddleware,
     rate_limit_paths=["/api/users/login"],
@@ -125,9 +130,13 @@ app.add_middleware(
 app.add_middleware(
     LoggingMiddleware,
     log_request_body=False,
-    log_response_body=False,
     skip_paths=["/health", "/ready", "/docs", "/openapi.json", "/redoc"],
 )
+
+app.add_exception_handler(RequestValidationError, validation_exception_handler)  # type: ignore[arg-type]
+app.add_exception_handler(StarletteHTTPException, http_exception_handler)  # type: ignore[arg-type]
+app.add_exception_handler(Exception, global_exception_handler)
+
 app.include_router(monitoring_router)
 app.include_router(cases_router)
 app.include_router(client_router)

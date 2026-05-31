@@ -57,6 +57,7 @@ _IDLE_KEEPALIVE = 20 * 60
 _POLL_INTERVAL = 5 * 60
 _BACKOFF_BASE = 5
 _BACKOFF_MAX = 300
+_IDLE_PUSH_TIMEOUT = 30
 
 
 async def _resolve_thread(
@@ -66,14 +67,6 @@ async def _resolve_thread(
 ) -> tuple[uuid.UUID, uuid.UUID | None]:
     """
     Определяет thread_id и parent_id для нового письма.
-
-    Алгоритм (идентичен Gmail/Outlook):
-    1. In-Reply-To → ищем письмо с таким external_message_id.
-    2. References (с конца) → ищем любое совпадение.
-    3. Не нашли → новый тред.
-
-    Дополнительно: если у найденного родителя thread_id=NULL
-    (письмо из старых данных) — назначаем ему thread_id на месте.
     """
     in_reply_to = (parsed.get("In-Reply-To") or "").strip()
     references_raw = (parsed.get("References") or "").strip()
@@ -130,6 +123,7 @@ class ImapIdleWorker:
         self._user_id: uuid.UUID | None = None
         self._client: aioimaplib.IMAP4_SSL | None = None
         self._stop_event = asyncio.Event()
+        self._known_stale_seqs: set[int] = set()
 
     def stop(self) -> None:
         log.warning("ImapIdleWorker: stop() called")
@@ -202,6 +196,7 @@ class ImapIdleWorker:
 
     async def _connect(self) -> None:
         log.info(f"ImapIdleWorker [INBOX]: connecting to {app_settings.MAIL_IMAP_HOST}...")
+        self._known_stale_seqs.clear()
         self._client = aioimaplib.IMAP4_SSL(
             host=app_settings.MAIL_IMAP_HOST,
             port=app_settings.MAIL_IMAP_PORT,
@@ -228,9 +223,10 @@ class ImapIdleWorker:
 
         await self._fetch_new_messages(current_validity)
 
+        idle_start_time = asyncio.get_event_loop().time()
+
         while not self._stop_event.is_set():
             log.info("ImapIdleWorker [INBOX]: entering IDLE mode...")
-            idle_failed = False
 
             try:
                 idle_task = await self._client.idle_start(timeout=_IDLE_KEEPALIVE)
@@ -238,42 +234,41 @@ class ImapIdleWorker:
                 try:
                     msg = await asyncio.wait_for(
                         self._client.wait_server_push(),
-                        timeout=_IDLE_KEEPALIVE + 4 * 60,
+                        timeout=_IDLE_PUSH_TIMEOUT,
                     )
                     log.info(f"ImapIdleWorker [INBOX]: push received: {msg}")
+
                 except TimeoutError:
-                    log.debug("ImapIdleWorker [INBOX]: keepalive elapsed, refreshing...")
+                    log.debug("ImapIdleWorker [INBOX]: no push in 30s, checking manually...")
+
                 finally:
                     self._client.idle_done()
                     try:
-                        await asyncio.wait_for(idle_task, timeout=10)
+                        await asyncio.wait_for(idle_task, timeout=30)
                     except TimeoutError as err:
-                        log.info("ImapIdleWorker [INBOX]: server closed IDLE (normal), reconnecting...")
+                        log.info("ImapIdleWorker [INBOX]: IDLE closed by server (normal), reconnecting...")
                         raise ConnectionError("Server closed IDLE connection") from err
 
             except ConnectionError:
                 raise
             except Exception as e:
                 log.warning(f"ImapIdleWorker [INBOX]: IDLE failed/interrupted: {e!r}")
-                idle_failed = True
-
-            if idle_failed:
-                raise ConnectionError("IDLE connection lost, reconnecting")
+                raise ConnectionError("IDLE connection lost, reconnecting") from e
 
             if not self._stop_event.is_set():
                 await self._fetch_new_messages(current_validity)
-                await asyncio.sleep(2)
+                await asyncio.sleep(1)
 
-    async def _sync_missed_messages(self, current_validity: str | None) -> None:
-        await self._fetch_new_messages(current_validity)
+                elapsed = asyncio.get_event_loop().time() - idle_start_time
+                if elapsed > 25 * 60:
+                    log.info("ImapIdleWorker [INBOX]: 25min elapsed, reconnecting to refresh...")
+                    raise ConnectionError("Periodic reconnect")
 
     async def _fetch_new_messages(self, current_validity: str | None) -> None:
         assert self._client is not None
 
         last_uid = await self._get_last_uid()
         status, resp = await self._client.search(f"UID {last_uid + 1}:*")
-
-        log.info(f"ImapIdleWorker [INBOX]: DB last_uid={last_uid}, SEARCH status={status}, resp={resp}")
 
         if status != "OK" or not resp or not resp[0]:
             return
@@ -292,16 +287,30 @@ class ImapIdleWorker:
         if not seq_list:
             return
 
-        log.info(f"ImapIdleWorker [INBOX]: PROCESSING {len(seq_list)} messages: {seq_list}")
+        new_seq_list = [s for s in seq_list if s not in self._known_stale_seqs]
+
+        if not new_seq_list:
+            log.debug(f"ImapIdleWorker [INBOX]: skipping known stale seqs={seq_list}, last_uid={last_uid}")
+            return
+
+        log.info(f"ImapIdleWorker [INBOX]: DB last_uid={last_uid}, new seqs to check: {new_seq_list}")
+        log.info(f"ImapIdleWorker [INBOX]: PROCESSING {len(new_seq_list)} messages: {new_seq_list}")
 
         current_max = last_uid
 
-        for seq_int in sorted(seq_list):
+        for seq_int in sorted(new_seq_list):
             real_uid, success = await self._process_single_message_by_seq_and_filter(str(seq_int), last_uid, MailFolder.INBOX)
-            if real_uid and real_uid > current_max:
-                current_max = real_uid
+            if real_uid is not None:
+                if real_uid > current_max:
+                    current_max = real_uid
+                if real_uid <= last_uid:
+                    self._known_stale_seqs.add(seq_int)
+                    log.debug(f"ImapIdleWorker [INBOX]: seq={seq_int} uid={real_uid} is stale, muting")
+            else:
+                log.warning(f"ImapIdleWorker [INBOX]: could not get real_uid for seq={seq_int}, skipping")
 
         if current_max > last_uid:
+            self._known_stale_seqs.clear()
             await self._update_sync_state(current_max, current_validity)
             log.info(f"ImapIdleWorker [INBOX]: Sync state updated to {current_max}")
 
@@ -323,9 +332,8 @@ class ImapIdleWorker:
                 log.error(f"Could not extract UID from fetch response for seq={seq}")
                 return None, False
 
-            # Вот здесь фильтруем — если UID уже обработан, пропускаем
             if real_uid <= last_uid:
-                log.debug(f"ImapIdleWorker [INBOX]: seq={seq} has uid={real_uid} <= last_uid={last_uid}, skipping")
+                log.debug(f"ImapIdleWorker [INBOX]: seq={seq} uid={real_uid} <= last_uid={last_uid}, skipping")
                 return real_uid, False
 
             flags = _extract_flags_from_fetch_response(fetch_resp)
@@ -333,8 +341,8 @@ class ImapIdleWorker:
 
             raw = _extract_email_body(fetch_resp)
             if not raw:
-                log.error(f"EMPTY BODY for seq={seq}, uid={real_uid}. Skipping.")
-                return real_uid, True
+                log.warning(f"EMPTY BODY for seq={seq}, uid={real_uid}. Marking processed.")
+                return real_uid, False
 
             parsed = email.message_from_bytes(raw)
             del raw
@@ -356,7 +364,7 @@ class ImapIdleWorker:
             if stored:
                 log.info(f"ImapIdleWorker [INBOX]: saved uid={real_uid}")
             else:
-                log.warning(f"ImapIdleWorker [INBOX]: uid={real_uid} not stored (duplicate)")
+                log.debug(f"ImapIdleWorker [INBOX]: uid={real_uid} duplicate, skipped")
 
             return real_uid, stored
 
@@ -382,7 +390,7 @@ class ImapIdleWorker:
             raw = _extract_email_body(fetch_resp)
 
             if not raw:
-                log.error(f"EMPTY BODY for UID {uid}. Skipping to avoid infinite loop.")
+                log.warning(f"EMPTY BODY for UID {uid}, marking as processed to avoid loop.")
                 return real_uid, True
 
             parsed = email.message_from_bytes(raw)
@@ -399,11 +407,13 @@ class ImapIdleWorker:
                 )
                 await session.commit()
 
-            if not stored:
-                log.warning(f"Message UID {uid} was NOT stored (possibly duplicate in _persist_imap_message)")
-                return real_uid, True
+            if stored:
+                log.info(f"ImapIdleWorker [INBOX]: saved uid={real_uid}")
+            else:
+                log.debug(f"ImapIdleWorker [INBOX]: uid={real_uid} duplicate, skipped")
 
-            return real_uid, True
+            return real_uid, stored
+
         except Exception as e:
             log.exception(f"FATAL processing UID {uid}: {e}")
             return None, False
@@ -778,7 +788,6 @@ class ImapSyncer:
             await client.wait_hello_from_server()
             await client.login(app_settings.MAIL_EMAIL, app_settings.MAIL_PASSWORD)
 
-            # SELECT с fallback
             selected = False
             candidates = _IMAP_FOLDER_FALLBACKS.get(folder, [imap_folder_name])
             for name in candidates:
@@ -895,11 +904,6 @@ class ImapSyncer:
             errors=errors,
             synced_at=datetime.now(UTC),
         )
-
-
-# ---------------------------------------------------------------------------
-# Утилиты парсинга IMAP-ответов
-# ---------------------------------------------------------------------------
 
 
 def _extract_uidvalidity(select_response: Any) -> str | None:  # noqa: ANN401
