@@ -54,11 +54,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         print(f"Redis connection: FAILED | {e}")
         raise e
 
+    await s3_storage.__aenter__()
     try:
         await s3_storage.init_bucket()
         print("S3 Storage initialization: OK")
     except Exception as e:
         print(f"S3 Storage initialization: FAILED | {e}")
+        await s3_storage.__aexit__(None, None, None)
         raise e
 
     try:
@@ -85,6 +87,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     print("IMAP Folder poller (Sent/Drafts/Spam/Trash): started")
     print("Application is ready to serve requests.")
     yield
+
+    print("Shutting down S3 client...")
+    await s3_storage.__aexit__(None, None, None)
 
     print("Shutting down IMAP workers...")
     imap_idle_worker.stop()

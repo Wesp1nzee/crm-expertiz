@@ -5,10 +5,11 @@ import zipfile
 from collections.abc import AsyncGenerator
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from types_aiobotocore_s3.type_defs import PartTypeDef
 
 from src.app.core.auth.deps import get_current_user
 from src.app.core.auth.models import UserContext
@@ -23,6 +24,8 @@ from src.app.services.document.schemas import (
     DocumentsBulkDeleteRequest,
     DocumentsBulkMoveRequest,
     DocumentUpdate,
+    DocumentUploadInitRequest,
+    DocumentUploadInitResponse,
     EntryType,
     FileSystemEntry,
     FolderCreate,
@@ -30,8 +33,13 @@ from src.app.services.document.schemas import (
     FolderListResponse,
     FolderResponse,
     FolderUpdate,
+    MultipartCompleteRequest,
+    MultipartLinksRequest,
+    MultipartLinksResponse,
+    PartUploadLink,
     RestoreOperationResponse,
     TrashOperationResponse,
+    UploadConfirmRequest,
 )
 from src.app.services.document.service import DocumentService
 
@@ -117,29 +125,114 @@ async def create_folder(
 
 
 @router.post(
-    "/upload",
-    response_model=DocumentResponse,
+    "/upload/init",
+    response_model=DocumentUploadInitResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Загрузить документ",
+    summary="Инициализировать загрузку документа",
+    description=(
+        "Бэкенд валидирует права, создаёт запись в БД и возвращает либо Presigned Post "
+        "(для файлов ≤ 50 МБ), либо UploadId для multipart-загрузки (для файлов > 50 МБ). "
+        "Фронтенд загружает файл напрямую в S3."
+    ),
 )
-async def upload_document(
-    file: UploadFile = File(...),
-    case_id: uuid.UUID | None = Form(None),
-    folder_id: uuid.UUID | None = Form(None),
-    title: str | None = Form(None),
+async def init_upload(
+    body: DocumentUploadInitRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+) -> DocumentUploadInitResponse:
+    service = DocumentService(db)
+    doc, upload_meta = await service.init_upload(
+        user_id=current_user.id,
+        company_id=current_user.company_id,
+        original_filename=body.original_filename,
+        content_type=body.content_type,
+        file_size=body.file_size,
+        case_id=body.case_id,
+        folder_id=body.folder_id,
+        title=body.title,
+    )
+
+    strategy: str = upload_meta["strategy"]
+    response = DocumentUploadInitResponse(
+        document_id=doc.id,
+        key=doc.file_path,
+        strategy=strategy,
+        presigned_post=upload_meta.get("presigned_post"),
+        multipart=upload_meta.get("multipart"),
+    )
+    return response
+
+
+@router.post(
+    "/upload/multipart/links",
+    response_model=MultipartLinksResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Получить Presigned URL для частей multipart-загрузки",
+)
+async def get_multipart_links(
+    body: MultipartLinksRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+) -> MultipartLinksResponse:
+    service = DocumentService(db)
+    parts = await service.get_multipart_parts_urls(
+        document_id=body.document_id,
+        key=body.key,
+        upload_id=body.upload_id,
+        parts_count=body.parts_count,
+        company_id=current_user.company_id,
+    )
+    return MultipartLinksResponse(
+        document_id=body.document_id,
+        key=body.key,
+        upload_id=body.upload_id,
+        parts=[PartUploadLink(**p) for p in parts],
+    )
+
+
+@router.post(
+    "/upload/multipart/complete",
+    response_model=DocumentResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Завершить multipart-загрузку",
+)
+async def complete_multipart_upload(
+    body: MultipartCompleteRequest,
     db: AsyncSession = Depends(get_db),
     current_user: UserContext = Depends(get_current_user),
 ) -> DocumentResponse:
     service = DocumentService(db)
-    result = await service.upload_document(
-        file=file,
-        user_id=current_user.id,
+    parts_raw: list[PartTypeDef] = [{"PartNumber": p.part_number, "ETag": p.etag} for p in body.parts]
+    doc = await service.complete_upload(
+        document_id=body.document_id,
+        key=body.key,
+        upload_id=body.upload_id,
+        parts=parts_raw,
         company_id=current_user.company_id,
-        case_id=case_id,
-        folder_id=folder_id,
-        title=title,
     )
-    return DocumentResponse.model_validate(result)
+    return DocumentResponse.model_validate(doc)
+
+
+@router.post(
+    "/upload/confirm",
+    response_model=DocumentResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Подтвердить успешную прямую загрузку (Presigned Post)",
+)
+async def confirm_upload(
+    body: UploadConfirmRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserContext = Depends(get_current_user),
+) -> DocumentResponse:
+    service = DocumentService(db)
+    doc = await service.confirm_upload(
+        document_id=body.document_id,
+        key=body.key,
+        company_id=current_user.company_id,
+    )
+    if doc is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Документ не найден")
+    return DocumentResponse.model_validate(doc)
 
 
 @router.delete(

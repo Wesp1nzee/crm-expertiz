@@ -5,10 +5,10 @@ import os
 import uuid
 import zipfile
 from collections import defaultdict
-from datetime import UTC, datetime
-from typing import Any, cast
+from datetime import UTC, datetime, timedelta
+from typing import Any, Literal, cast
 
-from fastapi import HTTPException, UploadFile, status
+from fastapi import HTTPException, status
 from sqlalchemy import (
     CTE,
     Text,
@@ -28,16 +28,19 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.sql import Select
+from types_aiobotocore_s3.type_defs import PartTypeDef
 
 from src.app.core.schemas.base import PaginatedResponse, PaginationMeta
 from src.app.core.storage.s3 import s3_storage
 from src.app.services.case.models import Case, case_experts
-from src.app.services.document.models import Document, Folder, ShareType
+from src.app.services.document.models import Document, DocumentStatus, Folder, ShareType
 from src.app.services.document.schemas import FileSystemEntry, FolderCreate, FolderListItem, ShareInfoBrief
 from src.app.services.share.models import DocumentShare, ShareBatch
 from src.app.services.user.models import User, UserRole
 
 logger = logging.getLogger(__name__)
+
+_MULTIPART_THRESHOLD = 50 * 1024 * 1024  # 50 МБ
 
 
 class DocumentService:
@@ -185,25 +188,39 @@ class DocumentService:
         await self.db.commit()
         await self._delete_s3_files_safe(file_paths)
 
-    async def upload_document(
+    @staticmethod
+    def _build_s3_key(case_id: uuid.UUID | None, extension: str) -> str:
+        """Собирает изолированный путь в S3: cases/{case_id}/documents/{uuidv4}.{ext}"""
+        doc_uuid = uuid.uuid4()
+        ext = extension.lstrip(".").lower() or "bin"
+        if case_id:
+            return f"cases/{case_id}/documents/{doc_uuid}.{ext}"
+        return f"documents/{doc_uuid}.{ext}"
+
+    async def init_upload(
         self,
-        file: UploadFile,
         user_id: uuid.UUID,
         company_id: uuid.UUID,
+        original_filename: str,
+        content_type: str,
+        file_size: int,
         case_id: uuid.UUID | None = None,
         folder_id: uuid.UUID | None = None,
         title: str | None = None,
-    ) -> Document:
-        file_ext = os.path.splitext(file.filename or "")[1].lower()
-        s3_key = f"documents/{uuid.uuid4()}{file_ext}"
-        final_title = title if title else file.filename or "Untitled"
+    ) -> tuple[Document, dict[str, Any]]:
+        """Инициализирует загрузку документа.
+        Возвращает созданную запись Document и словарь с данными для фронтенда:
+        """
+        file_ext = os.path.splitext(original_filename)[1].lower()
+        s3_key = self._build_s3_key(case_id, file_ext)
+        final_title = title if title else original_filename or "Untitled"
 
         effective_folder_id = folder_id
         if case_id:
             case_res = await self.db.execute(select(Case).where(Case.id == case_id, Case.company_id == company_id))
             case = case_res.scalar_one_or_none()
             if not case:
-                raise HTTPException(status_code=404, detail="Дело не найдено")
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Дело не найдено")
             if folder_id:
                 f_check = await self.db.execute(
                     select(Folder.case_id).where(Folder.id == folder_id, Folder.company_id == company_id, ~Folder.is_deleted)
@@ -213,38 +230,188 @@ class DocumentService:
             else:
                 effective_folder_id = case.root_folder_id
 
+        strategy: Literal["presigned_post", "multipart"]
+        upload_meta: dict[str, Any]
+
+        if file_size <= _MULTIPART_THRESHOLD:
+            strategy = "presigned_post"
+            presigned = await s3_storage.generate_presigned_post(
+                object_key=s3_key,
+                content_type=content_type,
+                min_size=1,
+                max_size=_MULTIPART_THRESHOLD,
+            )
+            upload_meta = {
+                "strategy": strategy,
+                "presigned_post": presigned,
+            }
+            doc_status = DocumentStatus.PENDING
+            doc_upload_id = None
+        else:
+            strategy = "multipart"
+            mpu = await s3_storage.create_multipart_upload(
+                object_key=s3_key,
+                content_type=content_type,
+            )
+            upload_meta = {
+                "strategy": strategy,
+                "multipart": {
+                    "upload_id": mpu["upload_id"],
+                    "key": mpu["key"],
+                },
+            }
+            doc_status = DocumentStatus.PENDING
+            doc_upload_id = mpu["upload_id"]
+
         db_doc = Document(
             case_id=case_id,
             folder_id=effective_folder_id,
             title=final_title,
-            original_filename=file.filename or "unknown",
+            original_filename=original_filename,
             file_path=s3_key,
-            file_size=file.size,
-            mime_type=file.content_type or "application/octet-stream",
+            file_size=file_size,
+            mime_type=content_type or "application/octet-stream",
             file_extension=file_ext,
             uploaded_by_id=user_id,
             company_id=company_id,
+            status=doc_status,
+            upload_id=doc_upload_id,
         )
         self.db.add(db_doc)
-        await self.db.flush()
+        await self.db.commit()
+        await self.db.refresh(db_doc)
+
+        return db_doc, upload_meta
+
+    async def get_multipart_parts_urls(
+        self,
+        document_id: uuid.UUID,
+        key: str,
+        upload_id: str,
+        parts_count: int,
+        company_id: uuid.UUID,
+    ) -> list[dict[str, int | str]]:
+        """Генерирует Presigned URL для каждой части multipart-загрузки."""
+        doc = await self._get_document_for_upload(document_id, key, upload_id, company_id)
+        if doc is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Документ не найден или не в статусе pending",
+            )
+
+        parts: list[dict[str, int | str]] = []
+        for part_number in range(1, parts_count + 1):
+            url = await s3_storage.generate_presigned_url_upload_part(
+                object_key=key,
+                upload_id=upload_id,
+                part_number=part_number,
+            )
+            parts.append({"part_number": part_number, "upload_url": url})
+
+        return parts
+
+    async def complete_upload(
+        self,
+        document_id: uuid.UUID,
+        key: str,
+        upload_id: str,
+        parts: list[PartTypeDef],
+        company_id: uuid.UUID,
+    ) -> Document:
+        """Завершает multipart-загрузку и переводит документ в статус active."""
+        doc = await self._get_document_for_upload(document_id, key, upload_id, company_id)
+        if doc is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Документ не найден или уже завершён",
+            )
 
         try:
-            await s3_storage.upload_file(
-                file_obj=file.file,
-                object_key=s3_key,
-                content_type=file.content_type or "application/octet-stream",
+            await s3_storage.complete_multipart_upload(
+                object_key=key,
+                upload_id=upload_id,
+                parts=parts,
             )
+            doc.status = DocumentStatus.ACTIVE
+            doc.upload_id = None
+            doc.updated_at = datetime.now(UTC)
             await self.db.commit()
-        except Exception as err:
-            await self.db.rollback()
-            logger.exception("Ошибка при загрузке в S3: %s", s3_key)
+            await self.db.refresh(doc)
+        except Exception as e:
+            doc.status = DocumentStatus.FAILED
+            doc.upload_id = None
+            doc.updated_at = datetime.now(UTC)
+            await self.db.commit()
+            logger.exception("Ошибка при завершении multipart-загрузки документа %s", document_id)
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="Ошибка хранилища. Запись не создана.",
-            ) from err
+                detail="Ошибка при завершении загрузки в S3",
+            ) from e
 
-        await self.db.refresh(db_doc)
-        return db_doc
+        return doc
+
+    async def confirm_upload(
+        self,
+        document_id: uuid.UUID,
+        key: str,
+        company_id: uuid.UUID,
+    ) -> Document | None:
+        """Подтверждает успешную прямую загрузку.
+
+        Возвращает документ только если файл реально есть в S3.
+        """
+        res = await self.db.execute(
+            select(Document).where(
+                Document.id == document_id,
+                Document.company_id == company_id,
+                Document.file_path == key,
+                ~Document.is_deleted,
+            )
+        )
+        doc = res.scalar_one_or_none()
+        if not doc:
+            return None
+
+        head = await s3_storage.head_object(key)
+        if head is None:
+            doc.status = DocumentStatus.FAILED
+            doc.updated_at = datetime.now(UTC)
+            await self.db.commit()
+            await self.db.refresh(doc)
+            logger.warning(
+                "Документ %s помечен как FAILED: файл отсутствует в S3 (key=%s)",
+                document_id,
+                key,
+            )
+            return None
+
+        if doc.status != DocumentStatus.ACTIVE:
+            doc.status = DocumentStatus.ACTIVE
+            doc.updated_at = datetime.now(UTC)
+            await self.db.commit()
+            await self.db.refresh(doc)
+
+        return doc
+
+    async def _get_document_for_upload(
+        self,
+        document_id: uuid.UUID,
+        key: str,
+        upload_id: str,
+        company_id: uuid.UUID,
+    ) -> Document | None:
+        """Находит документ в статусе pending с совпадающим key и upload_id."""
+        res = await self.db.execute(
+            select(Document).where(
+                Document.id == document_id,
+                Document.company_id == company_id,
+                Document.file_path == key,
+                Document.upload_id == upload_id,
+                Document.status == DocumentStatus.PENDING,
+                ~Document.is_deleted,
+            )
+        )
+        return res.scalar_one_or_none()
 
     async def get_presigned_url(
         self,
@@ -252,11 +419,17 @@ class DocumentService:
         company_id: uuid.UUID,
         download: bool = False,
     ) -> str | None:
+        """Генерирует временную ссылку на скачивание/просмотр документа.
+
+        Проверяет права доступа и статус документа. Ссылка кодируется
+        строго по RFC 6266 для безопасной передачи имени файла.
+        """
         res = await self.db.execute(
             select(Document).where(
                 Document.id == doc_id,
                 Document.company_id == company_id,
                 ~Document.is_deleted,
+                Document.status == DocumentStatus.ACTIVE,
             )
         )
         doc = res.scalar_one_or_none()
@@ -1440,3 +1613,54 @@ class DocumentService:
                     result[key]["public_link_count"] += cnt
 
         return {k: ShareInfoBrief(**v) for k, v in result.items()}
+
+    # ── Очистка брошенных multipart-загрузок ───────────────────────────
+
+    @staticmethod
+    async def cleanup_abandoned_uploads(company_id: uuid.UUID | None = None) -> int:
+        """Фоновая задача: отменяет multipart-загрузки, висящие > 24 часов.
+
+        Запрашивает список активных multipart-сессий в S3 и сверяет с БД.
+        Загрузки в статусе 'pending' старше 24 часов — отменяются.
+        """
+        from src.app.core.database.session import AsyncSessionLocal as _AsyncSessionLocal
+
+        cleaned = 0
+        cutoff = datetime.now(UTC) - timedelta(hours=24)
+
+        try:
+            uploads = await s3_storage.list_multipart_uploads()
+        except Exception:
+            logger.exception("Не удалось получить список multipart-загрузок из S3")
+            return 0
+
+        async with _AsyncSessionLocal() as session:
+            for upload_item in uploads:
+                key = upload_item.get("key", "")
+                upload_id_str = upload_item.get("upload_id", "")
+                if not key or not upload_id_str:
+                    continue
+
+                doc_result = await session.execute(
+                    select(Document).where(
+                        Document.file_path == key,
+                        Document.upload_id == upload_id_str,
+                        Document.status == DocumentStatus.PENDING,
+                        Document.created_at < cutoff,
+                    )
+                )
+                if doc_result.scalar_one_or_none():
+                    try:
+                        await s3_storage.abort_multipart_upload(object_key=key, upload_id=upload_id_str)
+                        await session.execute(
+                            update(Document)
+                            .where(Document.file_path == key, Document.upload_id == upload_id_str)
+                            .values(status=DocumentStatus.FAILED, upload_id=None, updated_at=datetime.now(UTC))
+                        )
+                        await session.commit()
+                        cleaned += 1
+                        logger.info("Отменена брошенная multipart-загрузка: key=%s upload_id=%s", key, upload_id_str)
+                    except Exception:
+                        logger.exception("Ошибка при отмене multipart-загрузки: key=%s", key)
+
+        return cleaned

@@ -48,8 +48,7 @@ class HealthCheckService:
     async def check_s3() -> HealthStatus:
         """Проверка подключения к S3"""
         try:
-            async with s3_storage.get_client() as client:
-                await client.head_bucket(Bucket=s3_storage.config.get("bucket_name", ""))
+            await s3_storage.client.head_bucket(Bucket=s3_storage.bucket)
             return HealthStatus(status="ok", details={"s3": "connected"})
         except Exception as e:
             logger.error(f"S3 health check failed: {e}")
